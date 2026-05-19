@@ -1,10 +1,9 @@
 import logging
-from typing import Union, Optional
+from typing import Optional, Union
 
 import torch.nn as nn
 
 from .. import base
-
 
 __all__ = ["reset_net", "set_step_mode", "set_backend", "detach_net"]
 
@@ -20,13 +19,14 @@ def reset_net(net: nn.Module):
 
     * **中文**
 
-    将网络的状态重置。做法是遍历网络中的所有 ``Module``，若 ``m `` 为
-    ``base.MemoryModule`` 函数或者是拥有 ``reset()`` 方法，则调用 ``m.reset()``。
+    将网络的状态重置。做法是遍历网络中的所有 ``Module``，若 ``m`` 为
+    ``base.MemoryModule`` 或者拥有 ``reset()`` 方法，则调用 ``m.reset()``。
 
     :param net: 任何属于 ``nn.Module`` 子类的网络
     :type net: torch.nn.Module
 
     :return: None
+    :rtype: None
 
     ----
 
@@ -41,6 +41,7 @@ def reset_net(net: nn.Module):
     :type net: torch.nn.Module
 
     :return: None
+    :rtype: None
     """
     for m in net.modules():
         if hasattr(m, "reset"):
@@ -63,7 +64,7 @@ def set_step_mode(net: nn.Module, step_mode: str):
 
     * **中文**
 
-    将 ``net`` 中所有模块的步进模式设置为 ``step_mode`` 。
+    将 ``net`` 中所有具有 ``step_mode`` 属性的模块的步进模式设置为 ``step_mode`` 。
 
     .. note::
 
@@ -79,6 +80,7 @@ def set_step_mode(net: nn.Module, step_mode: str):
     :type step_mode: str
 
     :return: None
+    :rtype: None
 
     ----
 
@@ -86,7 +88,7 @@ def set_step_mode(net: nn.Module, step_mode: str):
 
     * **English**
 
-    Set ``step_mode`` for all modules in ``net``.
+    Set ``step_mode`` for all modules in ``net`` that have a ``step_mode`` attribute.
 
     .. admonition:: Note
         :class: note
@@ -95,7 +97,7 @@ def set_step_mode(net: nn.Module, step_mode: str):
         :class:`StepModeContainer <spikingjelly.activation_based.layer.container.StepModeContainer>`,
         :class:`ElementWiseRecurrentContainer <spikingjelly.activation_based.layer.container.ElementWiseRecurrentContainer>`,
         :class:`LinearRecurrentContainer <spikingjelly.activation_based.layer.container.LinearRecurrentContainer>`
-        will not be changed.base.MemoryModule`` or ``m`` has ``reset()``.
+        will not be changed.
 
     :param net: a network
     :type net: nn.Module
@@ -104,11 +106,12 @@ def set_step_mode(net: nn.Module, step_mode: str):
     :type step_mode: str
 
     :return: None
+    :rtype: None
     """
     from ..layer import (
-        StepModeContainer,
         ElementWiseRecurrentContainer,
         LinearRecurrentContainer,
+        StepModeContainer,
     )
 
     keep_step_mode_instance = (
@@ -160,7 +163,8 @@ def set_backend(
 
     * **中文**
 
-    将 ``net`` 中 所有类型为 ``instance`` 的模块后端更改为 ``backend`` 。
+    将 ``net`` 中所有满足 ``isinstance(m, instance)`` 且具有 ``backend`` 属性的模块后端更改为 ``backend`` 。
+    只有当 ``backend`` 在模块的 ``supported_backends`` 中时才会实际更新；否则会记录告警并保留原有后端。
 
     :param net: 一个神经网络
     :type net: torch.nn.Module
@@ -168,11 +172,12 @@ def set_backend(
     :param backend: 使用哪个后端
     :type backend: str
 
-    :param instance: 类型为 ``instance`` 的模块后端会被改变。若为 ``None`` ，
-        则所有模块的后端都会被改变
+    :param instance: 传给 ``isinstance`` 的筛选类型。满足该筛选且具有 ``backend`` 属性的模块后端会被检查。
+        若为 ``None`` ，则所有具有 ``backend`` 属性的模块都会被检查
     :type instance: Optional[Union[nn.Module, tuple[nn.Module]]]
 
     :return: None
+    :rtype: None
 
     ----
 
@@ -180,7 +185,11 @@ def set_backend(
 
     * **English**
 
-    Sets backends of all modules whose instance is ``instance`` in ``net`` to ``backend``.
+    Sets the backend of all modules in ``net`` whose type matches ``instance``
+    and that have a ``backend`` attribute to ``backend``. The backend is only
+    updated when ``backend`` is contained in the module's
+    ``supported_backends``; otherwise a warning is logged and the current
+    backend is kept unchanged.
 
     :param net: a network
     :type net: torch.nn.Module
@@ -188,11 +197,13 @@ def set_backend(
     :param backend: the backend to be set
     :type backend: str
 
-    :param instance: the backend of which instance will be changed. If ``None`` ,
-        all modules' backend will be changed
+    :param instance: the type filter passed to ``isinstance``. Modules that
+        match this filter and have a ``backend`` attribute will be checked. If
+        ``None``, all modules with a ``backend`` attribute will be checked
     :type instance: Optional[Union[nn.Module, tuple[nn.Module]]]
 
     :return: None
+    :rtype: None
     """
     instance = (nn.Module,) if instance is None else instance
     for m in net.modules():
@@ -222,12 +233,13 @@ def detach_net(net: nn.Module):
     * **中文**
 
     将网络与之前的时间步的计算图断开。做法是遍历网络中的所有 ``Module``，若 ``m`` 为
-    ``base.MemoryModule`` 函数或者是拥有 ``detach()`` 方法，则调用 ``m.detach()``。
+    ``base.MemoryModule`` 或者拥有 ``detach()`` 方法，则调用 ``m.detach()``。
 
     :param net: 任何属于 ``nn.Module`` 子类的网络
     :type net: torch.nn.Module
 
     :return: None
+    :rtype: None
 
     ----
 
@@ -243,6 +255,7 @@ def detach_net(net: nn.Module):
     :type net: torch.nn.Module
 
     :return: None
+    :rtype: None
     """
     for m in net.modules():
         if hasattr(m, "detach"):

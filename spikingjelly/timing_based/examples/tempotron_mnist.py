@@ -1,7 +1,6 @@
 import argparse
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.data as data
 import torchvision
 from torch.utils.tensorboard import SummaryWriter
@@ -178,9 +177,7 @@ def main():
             optimizer.zero_grad()
 
             v_max = net(in_spikes)
-            loss = neuron.Tempotron.mse_loss(
-                v_max, net.tempotron.v_threshold, label.to(device), 10
-            )
+            loss = net.tempotron.mse_loss(v_max, label.to(device))
             loss.backward()
             optimizer.step()
 

@@ -1,10 +1,10 @@
-from typing import Callable, Optional
 import logging
+from typing import Optional
 
 import torch
 
 from .. import surrogate
-from .base_node import SimpleBaseNode, BaseNode, NonSpikingBaseNode
+from .base_node import BaseNode, NonSpikingBaseNode, SimpleBaseNode
 
 try:
     from ..cuda_kernel.auto_cuda import neuron_kernel as ac_neuron_kernel
@@ -24,12 +24,26 @@ except BaseException as e:
 __all__ = ["SimpleIFNode", "IFNode", "NonSpikingIFNode"]
 
 
+def _is_expected_triton_fallback_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    expected_markers = (
+        "unsupported",
+        "not supported",
+        "no triton",
+        "triton is not installed",
+        "failed to import triton",
+        "dtype",
+        "invalid argument",
+    )
+    return any(marker in message for marker in expected_markers)
+
+
 class SimpleIFNode(SimpleBaseNode):
     def __init__(
         self,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = False,
         step_mode="s",
     ):
@@ -70,7 +84,7 @@ class IFNode(BaseNode):
         self,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = False,
         step_mode="s",
         backend="torch",
@@ -99,7 +113,7 @@ class IFNode(BaseNode):
         :type v_reset: Optional[float]
 
         :param surrogate_function: 反向传播时用来计算脉冲函数梯度的替代函数
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: 是否将 reset 过程的计算图分离
         :type detach_reset: bool
@@ -136,7 +150,7 @@ class IFNode(BaseNode):
         :type v_reset: Optional[float]
 
         :param surrogate_function: the function for calculating surrogate gradients of the heaviside step function in backward
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: whether detach the computation graph of reset in backward
         :type detach_reset: bool
@@ -170,7 +184,7 @@ class IFNode(BaseNode):
         if self.step_mode == "s":
             return ("torch", "cupy")
         elif self.step_mode == "m":
-            return ("torch", "cupy", "triton")
+            return ("torch", "cupy", "triton", "inductor")
         else:
             raise ValueError(self.step_mode)
 
@@ -178,7 +192,57 @@ class IFNode(BaseNode):
         self.v = self.v + x
 
     @staticmethod
-    @torch.jit.script
+    def _eval_single_step_forward(
+        x: torch.Tensor,
+        v: torch.Tensor,
+        v_threshold: float,
+        v_reset,
+        tau: Optional[float] = None,
+        decay_input: Optional[bool] = None,
+    ):
+        """Unified single-step eval (replaces jit_eval_single_step_forward_*)."""
+        v = v + x
+        spike = (v >= v_threshold).to(x)
+        v = (
+            (v - spike * v_threshold)
+            if v_reset is None
+            else (v_reset * spike + (1.0 - spike) * v)
+        )
+        return spike, v
+
+    @staticmethod
+    def _eval_multi_step_forward(
+        x_seq: torch.Tensor,
+        v: torch.Tensor,
+        v_threshold: float,
+        v_reset,
+        tau: Optional[float] = None,
+        decay_input: Optional[bool] = None,
+        store_v_seq: bool = False,
+    ):
+        """Unified multi-step eval (replaces jit_eval_multi_step_forward_*)."""
+        T = x_seq.shape[0]
+        spike_seq = torch.zeros_like(x_seq)
+        v_seq = torch.zeros_like(x_seq) if store_v_seq else None
+        soft_reset = v_reset is None
+        _vr = 0.0 if soft_reset else v_reset
+        for t in range(T):
+            v = v + x_seq[t]
+            spike = (v >= v_threshold).to(x_seq)
+            v = (
+                (v - spike * v_threshold)
+                if soft_reset
+                else (_vr * spike + (1.0 - spike) * v)
+            )
+            spike_seq[t] = spike
+            if store_v_seq:
+                v_seq[t] = v
+        if store_v_seq:
+            return spike_seq, v, v_seq
+        return spike_seq, v
+
+    # kept for subclass backward-compatibility
+    @staticmethod
     def jit_eval_single_step_forward_hard_reset(
         x: torch.Tensor, v: torch.Tensor, v_threshold: float, v_reset: float
     ):
@@ -188,7 +252,6 @@ class IFNode(BaseNode):
         return spike, v
 
     @staticmethod
-    @torch.jit.script
     def jit_eval_single_step_forward_soft_reset(
         x: torch.Tensor, v: torch.Tensor, v_threshold: float
     ):
@@ -197,63 +260,62 @@ class IFNode(BaseNode):
         v = v - spike * v_threshold
         return spike, v
 
-    @staticmethod
-    @torch.jit.script
-    def jit_eval_multi_step_forward_hard_reset(
-        x_seq: torch.Tensor, v: torch.Tensor, v_threshold: float, v_reset: float
-    ):
-        spike_seq = torch.zeros_like(x_seq)
-        for t in range(x_seq.shape[0]):
-            v = v + x_seq[t]
-            spike = (v >= v_threshold).to(x_seq)
-            v = v_reset * spike + (1.0 - spike) * v
-            spike_seq[t] = spike
-        return spike_seq, v
+    def _build_inductor_multi_step_graph(self):
+        store_v_seq = self.store_v_seq
+        soft_reset = self.v_reset is None
+        v_reset = 0.0 if soft_reset else self.v_reset
+        surrogate_fn = self.surrogate_function
+        v_threshold = self.v_threshold
+        detach_reset = self.detach_reset
 
-    @staticmethod
-    @torch.jit.script
-    def jit_eval_multi_step_forward_hard_reset_with_v_seq(
-        x_seq: torch.Tensor, v: torch.Tensor, v_threshold: float, v_reset: float
-    ):
-        spike_seq = torch.zeros_like(x_seq)
-        v_seq = torch.zeros_like(x_seq)
-        for t in range(x_seq.shape[0]):
-            v = v + x_seq[t]
-            spike = (v >= v_threshold).to(x_seq)
-            v = v_reset * spike + (1.0 - spike) * v
-            spike_seq[t] = spike
-            v_seq[t] = v
-        return spike_seq, v, v_seq
+        def _graph(x_seq: torch.Tensor, v_init: torch.Tensor):
+            v = v_init
+            spike_seq = torch.empty_like(x_seq)
+            if store_v_seq:
+                v_seq = torch.empty_like(x_seq)
+            for t in range(x_seq.shape[0]):
+                v = v + x_seq[t]
+                spike = surrogate_fn(v - v_threshold)
+                spike_d = spike.detach() if detach_reset else spike
+                if soft_reset:
+                    v = v - spike_d * v_threshold
+                else:
+                    v = spike_d * v_reset + (1.0 - spike_d) * v
+                spike_seq[t] = spike
+                if store_v_seq:
+                    v_seq[t] = v
+            if store_v_seq:
+                return spike_seq, v, v_seq
+            return spike_seq, v
 
-    @staticmethod
-    @torch.jit.script
-    def jit_eval_multi_step_forward_soft_reset(
-        x_seq: torch.Tensor, v: torch.Tensor, v_threshold: float
-    ):
-        spike_seq = torch.zeros_like(x_seq)
-        for t in range(x_seq.shape[0]):
-            v = v + x_seq[t]
-            spike = (v >= v_threshold).to(x_seq)
-            v = v - spike * v_threshold
-            spike_seq[t] = spike
-        return spike_seq, v
+        return _graph
 
-    @staticmethod
-    @torch.jit.script
-    def jit_eval_multi_step_forward_soft_reset_with_v_seq(
-        x_seq: torch.Tensor, v: torch.Tensor, v_threshold: float
-    ):
-        spike_seq = torch.zeros_like(x_seq)
-        v_seq = torch.zeros_like(x_seq)
-        for t in range(x_seq.shape[0]):
-            v = v + x_seq[t]
-            spike = (v >= v_threshold).to(x_seq)
-            v = v - spike * v_threshold
-            spike_seq[t] = spike
-            v_seq[t] = v
-        return spike_seq, v, v_seq
+    def _inductor_multi_step_forward(self, x_seq: torch.Tensor):
+        self.v_float_to_tensor(x_seq[0])
+        x_seq = self._canonicalize_inductor_tensor(x_seq)
+        v_init = self._canonicalize_inductor_tensor(self.v)
+        graph = self._compile_inductor_graph(
+            (
+                "if",
+                self.store_v_seq,
+                self.v_threshold,
+                self.v_reset,
+                self.detach_reset,
+                self._surrogate_inductor_cache_key(),
+                self._inductor_runtime_cache_key(x_seq, v_init),
+            ),
+            self._build_inductor_multi_step_graph(),
+        )
+        out = graph(x_seq, v_init)
+        if self.store_v_seq:
+            spike_seq, self.v, self.v_seq = out
+        else:
+            spike_seq, self.v = out
+        return spike_seq
 
     def multi_step_forward(self, x_seq: torch.Tensor):
+        if self.backend == "inductor":
+            return self._inductor_multi_step_forward(x_seq)
         if self.training:
             if self.backend == "torch":
                 return super().multi_step_forward(x_seq)
@@ -292,13 +354,15 @@ class IFNode(BaseNode):
                     )
 
                 self.v_float_to_tensor(x_seq[0])
-                spike_seq, v_seq = ac_neuron_kernel.IFNodeATGF.apply(
-                    x_seq.flatten(1),
-                    self.v.flatten(0),
-                    self.v_threshold,
-                    self.v_reset,
-                    self.forward_kernel,
-                    self.backward_kernel,
+                spike_seq, v_seq = ac_neuron_kernel.multistep_if(
+                    x_seq=x_seq.flatten(1),
+                    v_init=self.v.flatten(0),
+                    v_threshold=self.v_threshold,
+                    v_reset=self.v_reset,
+                    detach_reset=self.detach_reset,
+                    surrogate_function=self.surrogate_function,
+                    forward_kernel=self.forward_kernel,
+                    backward_kernel=self.backward_kernel,
                 )
                 spike_seq = spike_seq.reshape(x_seq.shape)
                 v_seq = v_seq.reshape(x_seq.shape)
@@ -308,7 +372,7 @@ class IFNode(BaseNode):
                 return spike_seq
             elif self.backend == "triton":
                 self.v_float_to_tensor(x_seq[0])
-                spike_seq, v_seq = triton_kernel.MultiStepIFNodePTT.apply(
+                spike_seq, v_seq = triton_kernel.multistep_if(
                     x_seq,
                     self.v,
                     self.v_threshold,
@@ -326,44 +390,50 @@ class IFNode(BaseNode):
         else:
             self.v_float_to_tensor(x_seq[0])
 
-            if self.backend == "triton":
-                self.v_float_to_tensor(x_seq[0])
-                spike_seq, v_seq = triton_kernel.MultiStepIFNodePTT.apply(
-                    x_seq,
-                    self.v,
-                    self.v_threshold,
-                    self.v_reset,
-                    self.detach_reset,
-                    self.surrogate_function,
-                )
-                if self.store_v_seq:
-                    self.v_seq = v_seq
-                self.v = v_seq[-1].clone()
-                return spike_seq
+            if x_seq.is_cuda and getattr(self.surrogate_function, "spiking", True):
+                try:
+                    spike_seq, v_seq = triton_kernel.multistep_if(
+                        x_seq,
+                        self.v,
+                        self.v_threshold,
+                        self.v_reset,
+                        self.detach_reset,
+                        self.surrogate_function,
+                    )
+                    if self.store_v_seq:
+                        self.v_seq = v_seq
+                        self.v = v_seq[-1]
+                    else:
+                        self.v = v_seq[-1].clone()
+                    return spike_seq
+                except (NotImplementedError, AttributeError, TypeError, KeyError) as e:
+                    logging.debug("Falling back from Triton IF kernel in eval: %s", e)
+                except RuntimeError as e:
+                    if _is_expected_triton_fallback_error(e):
+                        logging.debug(
+                            "Falling back from Triton IF kernel in eval: %s", e
+                        )
+                    else:
+                        logging.exception(
+                            "Unexpected Triton IF kernel failure in eval "
+                            "(dtype=%s, surrogate=%s)",
+                            x_seq.dtype,
+                            type(self.surrogate_function).__name__,
+                        )
+                        raise
 
             # torch & cupy backend:
-            if self.v_reset is None:
-                if self.store_v_seq:
-                    spike_seq, self.v, self.v_seq = (
-                        self.jit_eval_multi_step_forward_soft_reset_with_v_seq(
-                            x_seq, self.v, self.v_threshold
-                        )
-                    )
-                else:
-                    spike_seq, self.v = self.jit_eval_multi_step_forward_soft_reset(
-                        x_seq, self.v, self.v_threshold
-                    )
+            out = self._eval_multi_step_forward(
+                x_seq,
+                self.v,
+                self.v_threshold,
+                self.v_reset,
+                store_v_seq=self.store_v_seq,
+            )
+            if self.store_v_seq:
+                spike_seq, self.v, self.v_seq = out
             else:
-                if self.store_v_seq:
-                    spike_seq, self.v, self.v_seq = (
-                        self.jit_eval_multi_step_forward_hard_reset_with_v_seq(
-                            x_seq, self.v, self.v_threshold, self.v_reset
-                        )
-                    )
-                else:
-                    spike_seq, self.v = self.jit_eval_multi_step_forward_hard_reset(
-                        x_seq, self.v, self.v_threshold, self.v_reset
-                    )
+                spike_seq, self.v = out
             return spike_seq
 
     def single_step_forward(self, x: torch.Tensor):
@@ -406,7 +476,7 @@ class IFNode(BaseNode):
                     )
 
                 self.v_float_to_tensor(x)
-                spike, v = ss_ac_neuron_kernel.IFNodeATGF.apply(
+                spike, v = ss_ac_neuron_kernel.ss_if_step(
                     x.flatten(0),
                     self.v.flatten(0),
                     self.v_threshold,
@@ -423,14 +493,12 @@ class IFNode(BaseNode):
 
         else:
             self.v_float_to_tensor(x)
-            if self.v_reset is None:
-                spike, self.v = self.jit_eval_single_step_forward_soft_reset(
-                    x, self.v, self.v_threshold
-                )
-            else:
-                spike, self.v = self.jit_eval_single_step_forward_hard_reset(
-                    x, self.v, self.v_threshold, self.v_reset
-                )
+            spike, self.v = self._eval_single_step_forward(
+                x,
+                self.v,
+                self.v_threshold,
+                self.v_reset,
+            )
             return spike
 
 

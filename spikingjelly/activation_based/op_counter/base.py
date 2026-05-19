@@ -1,14 +1,14 @@
-from collections import defaultdict
-from typing import Any, Callable
 import logging
+from collections import defaultdict
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
 from torch.autograd.graph import register_multi_grad_hook
 from torch.overrides import TorchFunctionMode, resolve_name
 from torch.utils._python_dispatch import TorchDispatchMode
-from torch.utils.module_tracker import ModuleTracker
 from torch.utils._pytree import tree_flatten
+from torch.utils.module_tracker import ModuleTracker
 
 logger = logging.getLogger(__name__)
 _arrow = chr(0x2937)
@@ -17,9 +17,49 @@ _arrow = chr(0x2937)
 __all__ = [
     "ActiveModuleTracker",
     "BaseCounter",
+    "is_binary_tensor",
     "DispatchCounterMode",
     "FunctionCounterMode",
 ]
+
+
+def is_binary_tensor(x: torch.Tensor) -> bool:
+    r"""
+    **API Language:**
+    :ref:`中文 <is_binary_tensor-cn>` | :ref:`English <is_binary_tensor-en>`
+
+    ----
+
+    .. _is_binary_tensor-cn:
+
+    * **中文**
+
+    判断输入张量 ``x`` 是否为二元张量（即所有元素都在 {0, 1} 中或 ``dtype`` 为 ``bool``）。
+
+    :param x: 输入张量
+    :type x: torch.Tensor
+
+    :return: 如果 ``x`` 是二元张量或 bool 张量则返回 ``True``
+    :rtype: bool
+
+    ----
+
+    .. _is_binary_tensor-en:
+
+    * **English**
+
+    Check if the input tensor ``x`` is a binary tensor (all elements are in {0, 1} or its ``dtype`` is ``bool``).
+
+    :param x: input tensor
+    :type x: torch.Tensor
+
+    :return: ``True`` if ``x`` is a binary tensor or a bool tensor
+    :rtype: bool
+    """
+    if x.dtype == torch.bool:
+        return True
+    value = bool((x.eq(0) | x.eq(1)).all().item())
+    return value
 
 
 class ActiveModuleTracker(ModuleTracker):
@@ -195,7 +235,15 @@ class BaseCounter:
         """
         return func in self.rules
 
-    def count(self, func, args: tuple, kwargs: dict, out) -> int:
+    def count(
+        self,
+        func,
+        args: tuple,
+        kwargs: dict,
+        out,
+        active_modules: Optional[set[nn.Module]] = None,
+        parent_names: Optional[set[str]] = None,
+    ) -> int:
         r"""
         **API Language:**
         :ref:`中文 <BaseCounter.count-cn>` | :ref:`English <BaseCounter.count-en>`
@@ -220,6 +268,13 @@ class BaseCounter:
         :param out: `func` 输出
         :type out: Any
 
+        :param active_modules: 当前处于活跃状态的模块集合。大多数计数器可忽略该参数，
+            但需要结合模块上下文做语义统计的计数器可以使用它
+        :type active_modules: Optional[set[nn.Module]]
+
+        :param parent_names: 当前活跃模块名称集合。大多数计数器可忽略该参数
+        :type parent_names: Optional[set[str]]
+
         :return: 计算得到的计数值
         :rtype: int
 
@@ -243,6 +298,14 @@ class BaseCounter:
 
         :param out: output of `func`
         :type out: Any
+
+        :param active_modules: currently active module instances. Most counters can
+            ignore it, while context-aware counters may use it for semantic counting
+        :type active_modules: Optional[set[nn.Module]]
+
+        :param parent_names: names of the currently active parent modules. Most
+            counters can ignore it
+        :type parent_names: Optional[set[str]]
 
         :return: the calculated count
         :rtype: int
@@ -340,6 +403,42 @@ class BaseCounter:
         :rtype: int
         """
         return sum(self.records["Global"].values())
+
+    def reset(self):
+        r"""
+        **API Language:**
+        :ref:`中文 <BaseCounter.reset-cn>` | :ref:`English <BaseCounter.reset-en>`
+
+        ----
+
+        .. _BaseCounter.reset-cn:
+
+        * **中文**
+
+        重置计数器，清空所有已记录的计数。
+
+        此方法会将 :attr:`records` 重新初始化为空的嵌套字典，移除之前累积的全部计数结果。
+        适用于开始新的计数会话之前显式清零计数器状态。
+
+        :return: ``None``
+        :rtype: None
+
+        ----
+
+        .. _BaseCounter.reset-en:
+
+        * **English**
+
+        Reset the counter and clear all recorded counts.
+
+        This method reinitializes :attr:`records` to an empty nested dictionary,
+        removing all previously accumulated count results. Call it before starting
+        a new counting session when a counter instance is reused.
+
+        :return: ``None``
+        :rtype: None
+        """
+        self.records = defaultdict(lambda: defaultdict(int))
 
 
 class DispatchCounterMode(TorchDispatchMode):
@@ -491,6 +590,8 @@ class DispatchCounterMode(TorchDispatchMode):
         kwargs = {} if kwargs is None else kwargs
         out = func(*args, **kwargs)
         parent_names = self.module_tracker.parents
+        active_modules = set(self.module_tracker.active_modules)
+        parent_names_snapshot = set(parent_names)
 
         if self.verbose:
             print(f"DispatchCounterMode: {parent_names} - {resolve_name(func)}")
@@ -498,11 +599,20 @@ class DispatchCounterMode(TorchDispatchMode):
         for counter in self.counters:
             if self._should_skip(counter, func):
                 continue
-            value = counter.count(func, args, kwargs, out)
+            value = counter.count(
+                func,
+                args,
+                kwargs,
+                out,
+                active_modules=active_modules,
+                parent_names=parent_names_snapshot,
+            )
             if self.verbose:
                 print(f"{_arrow} + {value} [{counter.__class__.__name__}]")
-            for parent in set(parent_names):
+            for parent in parent_names_snapshot:
                 counter.record(parent, func, value)  # add the count to every ancestor
+            if hasattr(counter, "finalize_record"):
+                counter.finalize_record()
 
         return out
 
@@ -613,6 +723,8 @@ class FunctionCounterMode(TorchFunctionMode):
         kwargs = {} if kwargs is None else kwargs
         out = func(*args, **kwargs)
         parent_names = self.module_tracker.parents
+        active_modules = set(self.module_tracker.active_modules)
+        parent_names_snapshot = set(parent_names)
 
         if self.verbose:
             print(f"FunctionCounterMode: {parent_names} - {resolve_name(func)}")
@@ -620,10 +732,19 @@ class FunctionCounterMode(TorchFunctionMode):
         for counter in self.counters:
             if self._should_skip(counter, func):
                 continue
-            value = counter.count(func, args, kwargs, out)
+            value = counter.count(
+                func,
+                args,
+                kwargs,
+                out,
+                active_modules=active_modules,
+                parent_names=parent_names_snapshot,
+            )
             if self.verbose:
                 print(f"{_arrow} + {value}")
-            for parent in set(parent_names):
+            for parent in parent_names_snapshot:
                 counter.record(parent, func, value)  # add the count to every ancestor
+            if hasattr(counter, "finalize_record"):
+                counter.finalize_record()
 
         return out

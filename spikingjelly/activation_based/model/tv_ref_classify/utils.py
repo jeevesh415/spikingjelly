@@ -3,8 +3,11 @@ import datetime
 import errno
 import hashlib
 import os
+import statistics
 import time
 from collections import defaultdict, deque, OrderedDict
+from numbers import Number
+from typing import Optional, Sequence, Union
 
 import torch
 import torch.distributed as dist
@@ -57,6 +60,101 @@ class SmoothedValue:
 
     @property
     def value(self):
+        return self.deque[-1]
+
+    def __str__(self):
+        return self.fmt.format(
+            median=self.median,
+            avg=self.avg,
+            global_avg=self.global_avg,
+            max=self.max,
+            value=self.value,
+        )
+
+
+class ThroughputValue:
+    """Track throughput as total_samples / total_time."""
+
+    def __init__(self, window_size=20, fmt=None):
+        if fmt is None:
+            fmt = "{global_avg:.4f}"
+        self.deque = deque(maxlen=window_size)
+        self.total_samples = 0.0
+        self.total_time = 0.0
+        self.fmt = fmt
+
+    def update(self, samples, elapsed_time):
+        if elapsed_time <= 0:
+            return
+        throughput = samples / elapsed_time
+        self.deque.append(throughput)
+        self.total_samples += samples
+        self.total_time += elapsed_time
+
+    def synchronize_between_processes(self):
+        """Synchronize cumulative throughput statistics across ranks.
+
+        Chinese:
+            同步跨进程的累计吞吐统计量。
+
+        English:
+            Synchronize cumulative throughput statistics across distributed ranks.
+
+        :return: EN: ``None``. Chinese: 无返回值。
+        :rtype: None
+
+        .. note::
+
+            English: ``total_samples`` is reduced with ``SUM`` across ranks,
+            while ``total_time`` is reduced with ``MAX`` so global throughput is
+            computed as ``sum(samples) / max(elapsed_time)``. Windowed
+            statistics stored in ``deque`` remain local to each rank.
+
+            Chinese: ``total_samples`` 会在各 rank 间执行 ``SUM`` 归约,
+            ``total_time`` 会执行 ``MAX`` 归约, 因此全局吞吐被定义为
+            ``sum(samples) / max(elapsed_time)``。保存在 ``deque`` 中的窗口统计
+            仍然保持各 rank 本地独立。
+        """
+        if not is_dist_avail_and_initialized():
+            return
+
+        samples = reduce_across_processes(
+            self.total_samples, op=dist.ReduceOp.SUM, dtype=torch.float64
+        )
+        elapsed = reduce_across_processes(
+            self.total_time, op=dist.ReduceOp.MAX, dtype=torch.float64
+        )
+        self.total_samples = samples.item()
+        self.total_time = elapsed.item()
+
+    @property
+    def median(self):
+        if not self.deque:
+            return 0.0
+        return float(statistics.median(self.deque))
+
+    @property
+    def avg(self):
+        if not self.deque:
+            return 0.0
+        return sum(self.deque) / len(self.deque)
+
+    @property
+    def global_avg(self):
+        if self.total_time == 0.0:
+            return 0.0
+        return self.total_samples / self.total_time
+
+    @property
+    def max(self):
+        if not self.deque:
+            return 0.0
+        return max(self.deque)
+
+    @property
+    def value(self):
+        if not self.deque:
+            return 0.0
         return self.deque[-1]
 
     def __str__(self):
@@ -429,12 +527,35 @@ def store_model_weights(model, checkpoint_path, checkpoint_key="model", strict=T
     return output_path
 
 
-def reduce_across_processes(val):
+def reduce_across_processes(
+    val: Union[int, float, torch.Tensor, Sequence[Number]],
+    op: dist.ReduceOp = dist.ReduceOp.SUM,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    """EN: Reduce a scalar, tensor, or number sequence across distributed processes.
+    Chinese: 对标量、张量或数字序列在分布式进程间执行归约。
+
+    :param val: EN: Value to reduce. Chinese: 待归约的值。
+    :type val: Union[int, float, torch.Tensor, Sequence[Number]]
+    :param op: EN: Reduction operator, defaulting to SUM. Chinese: 归约操作符, 默认为 SUM。
+    :type op: torch.distributed.ReduceOp
+    :param dtype: EN: Optional output tensor dtype. Chinese: 可选的输出张量数据类型。
+    :type dtype: Optional[torch.dtype]
+    :return: EN: Reduced tensor placed on the backend-appropriate device. Chinese: 位于当前后端对应设备上的归约结果张量。
+    :rtype: torch.Tensor
+    """
     if not is_dist_avail_and_initialized():
         # nothing to sync, but we still convert to tensor for consistency with the distributed case.
-        return torch.tensor(val)
+        return torch.tensor(val, dtype=dtype)
 
-    t = torch.tensor(val, device="cuda")
-    dist.barrier()
-    dist.all_reduce(t)
+    backend = dist.get_backend()
+    backend_name = (
+        backend if isinstance(backend, str) else getattr(backend, "value", str(backend))
+    )
+    if "nccl" in backend_name.lower():
+        device = torch.device("cuda", torch.cuda.current_device())
+    else:
+        device = torch.device("cpu")
+    t = torch.tensor(val, device=device, dtype=dtype)
+    dist.all_reduce(t, op=op)
     return t

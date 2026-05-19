@@ -1,8 +1,10 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from spikingjelly.activation_based import surrogate, layer
-import math
+
+from spikingjelly.activation_based import surrogate
 
 
 def directional_rnn_cell_forward(
@@ -43,7 +45,7 @@ def bidirectional_rnn_cell_forward(
     :param states_reverse: 反向RNN cell的起始状态
         若RNN cell只有单个隐藏状态，则 ``shape = [batch_size, hidden_size]`` ；
         否则 ``shape = [states_num, batch_size, hidden_size]``
-    :type states: torch.Tensor
+    :type states_reverse: torch.Tensor
     :return: y, ss, ss_r
 
         y: torch.Tensor
@@ -466,7 +468,6 @@ class SpikingRNNBase(nn.Module):
         """
         # x.shape=[T, batch_size, input_size]
         # states states_num 个 [num_layers * num_directions, batch, hidden_size]
-        T = x.shape[0]
         batch_size = x.shape[1]
 
         if isinstance(states, tuple):
@@ -478,8 +479,8 @@ class SpikingRNNBase(nn.Module):
                 states_list = states
             else:
                 raise TypeError
-        elif states == None:
-            if self.bidirectional == True:
+        elif states is None:
+            if self.bidirectional:
                 states_list = torch.zeros(
                     size=[
                         self.states_num(),
@@ -695,8 +696,8 @@ class SpikingLSTMCell(SpikingRNNCellBase):
         :param input_size: The number of expected features in the input ``x``
         :type input_size: int
 
-        :param hidden_size: int
-        :type hidden_size: The number of features in the hidden state ``h``
+        :param hidden_size: The number of features in the hidden state ``h``
+        :type hidden_size: int
 
         :param bias: If ``False``, then the layer does not use bias weights ``b_ih`` and
             ``b_hh``. Default: ``True``

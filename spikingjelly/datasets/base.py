@@ -334,6 +334,35 @@ class EventBuilder(NeuromorphicDatasetBuilder):
         pass
 
     def build(self) -> Tuple[Path, Callable]:
+        r"""
+        **API Language:**
+        :ref:`中文 <EventBuilder.build-cn>` | :ref:`English <EventBuilder.build-en>`
+
+        ----
+
+        .. _EventBuilder.build-cn:
+
+        * **中文**
+
+        直接使用原始数据集目录作为处理后的数据集目录，不做额外处理。
+
+        :return: 元组 ``(processed_root, loader)``, 其中 ``processed_root`` 为原始数据集目录,
+            loader 为 ``np.load``。
+        :rtype: Tuple[pathlib.Path, Callable]
+
+        ----
+
+        .. _EventBuilder.build-en:
+
+        * **English**
+
+        Use the raw dataset directory as the processed dataset directory directly
+        without any additional preprocessing.
+
+        :return: a tuple ``(processed_root, loader)``, where ``processed_root``
+            is the raw dataset directory and the loader is ``np.load``.
+        :rtype: Tuple[pathlib.Path, Callable]
+        """
         return self.processed_root, self.get_loader()
 
     @property
@@ -649,13 +678,13 @@ class NeuromorphicDatasetFolder(DatasetFolder):
     def __init__(
         self,
         root: Union[str, Path],
-        train: bool = None,
+        train: Optional[bool] = None,
         data_type: str = "event",
-        frames_number: int = None,
-        split_by: str = None,
-        duration: int = None,
-        custom_integrate_function: Callable = None,
-        custom_integrated_frames_dir_name: str = None,
+        frames_number: Optional[int] = None,
+        split_by: Optional[str] = None,
+        duration: Optional[int] = None,
+        custom_integrate_function: Optional[Callable] = None,
+        custom_integrated_frames_dir_name: Optional[str] = None,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
     ):
@@ -707,35 +736,35 @@ class NeuromorphicDatasetFolder(DatasetFolder):
         :param train: 是否使用训练集。对于提供训练/测试划分的数据集，设置为 ``True`` 或 ``False``，例如 DVS128 Gesture。
             如果数据集不提供训练/测试划分，例如 CIFAR10-DVS，请设置为 ``None`` 并使用 :func:`split_to_train_test_set <spikingjelly.datasets.utils.split_to_train_test_set>`
             函数来获取训练/测试集
-        :type train: bool
+        :type train: Optional[bool]
 
         :param data_type: ``"event"`` 或 ``"frame"``
         :type data_type: str
 
         :param frames_number: 积分帧的数量
-        :type frames_number: int
+        :type frames_number: Optional[int]
 
         :param split_by: ``"time"`` 或 ``"number"``
-        :type split_by: str
+        :type split_by: Optional[str]
 
         :param duration: 每帧的时间时长，其单位与特定数据集的时间单位相同
-        :type duration: int
+        :type duration: Optional[int]
 
         :param custom_integrate_function: 一个用户定义的函数，其输入为 ``events, H, W``。``events`` 是一个键为 ``['t', 'x', 'y', 'p']``、值为 ``numpy.ndarray`` 的字典。
             ``H`` 是数据的高度，``W`` 是数据的宽度。
             例如，对于 DVS128 Gesture 数据集，``H=128`` 和 ``W=128``。
             应返回积分后的帧序列（``np.ndarray``）。
-        :type custom_integrate_function: Callable
+        :type custom_integrate_function: Optional[Callable]
 
         :param custom_integrated_frames_dir_name: 用于保存通过 ``custom_integrate_function`` 积分帧的目录名称。
             如果 ``None``，则设置为 ``custom_integrate_function.__name__``
         :type custom_integrated_frames_dir_name: Optional[str]
 
         :param transform: 一个函数/转换器，接收样本并返回转换后的版本。例如图像的 ``transforms.RandomCrop``。
-        :type transform: Callable
+        :type transform: Optional[Callable]
 
         :param target_transform: 一个函数/转换器，接收目标并对其进行转换。
-        :type target_transform: Callable
+        :type target_transform: Optional[Callable]
         ----
 
         .. _NeuromorphicDatasetFolder.__init__-en:
@@ -787,20 +816,20 @@ class NeuromorphicDatasetFolder(DatasetFolder):
             If the dataset does not provide train/test division, e.g., CIFAR10-DVS,
             please set to ``None`` and use :func:`split_to_train_test_set <spikingjelly.datasets.utils.split_to_train_test_set>`
             function to get train/test set
-        :type train: bool
+        :type train: Optional[bool]
 
         :param data_type: ``"event"`` or ``"frame"``
         :type data_type: str
 
         :param frames_number: the number of integrated frames
-        :type frames_number: int
+        :type frames_number: Optional[int]
 
         :param split_by: ``"time"`` or ``"number"``
-        :type split_by: str
+        :type split_by: Optional[str]
 
         :param duration: the time duration of each frame, whose unit is the same
             as the time unit of the specific dataset
-        :type duration: int
+        :type duration: Optional[int]
 
         :param custom_integrate_function: a user-defined function whose inputs
             are ``events, H, W``. ``events`` is a dict whose keys are
@@ -808,7 +837,7 @@ class NeuromorphicDatasetFolder(DatasetFolder):
             ``H`` is the height of the data and ``W`` is the weight of the data.
             For example, ``H=128`` and ``W=128`` for the DVS128 Gesture dataset.
             The integrated frame sequence (``np.ndarray``) should be returned.
-        :type custom_integrate_function: Callable
+        :type custom_integrate_function: Optional[Callable]
 
         :param custom_integrated_frames_dir_name: The name of directory for
             saving the frames integrating by ``custom_integrate_function``.
@@ -817,11 +846,11 @@ class NeuromorphicDatasetFolder(DatasetFolder):
 
         :param transform: a function/transform that takes in a sample and
             returns a transformed version. E.g, ``transforms.RandomCrop`` for images.
-        :type transform: Callable
+        :type transform: Optional[Callable]
 
         :param target_transform: a function/transform that takes in the target
             and transforms it.
-        :type target_transform: Callable
+        :type target_transform: Optional[Callable]
         """
         self.cfg = NeuromorphicDatasetConfig(
             root=Path(root),
@@ -870,6 +899,7 @@ class NeuromorphicDatasetFolder(DatasetFolder):
         **原始数据集**作为原始数据集的中间和统一表示。处理后的数据集是基于原始数据集生成的。
 
         :return: 默认为 ``root/events_np``
+        :rtype: pathlib.Path
         ----
 
         .. _NeuromorphicDatasetFolder.raw_root-en:
@@ -882,6 +912,7 @@ class NeuromorphicDatasetFolder(DatasetFolder):
         the original dataset. Processed dataset is generated based on the raw dataset.
 
         :return: default to ``root/events_np``
+        :rtype: pathlib.Path
         """
         return self.cfg.root / "events_np"
 
@@ -941,6 +972,9 @@ class NeuromorphicDatasetFolder(DatasetFolder):
         2. 通过调用 :meth:`extract_downloaded_files` 将下载的文件提取到 ``root/extract`` 中。
         3. 通过调用 :meth:`create_raw_from_extracted` 将提取的数据转换为原始数据集，并将原始数据集保存到 :attr:`raw_root`。
 
+        :return: None
+        :rtype: None
+
         ----
 
         .. _NeuromorphicDatasetFolder.prepare_raw_dataset-en:
@@ -955,6 +989,9 @@ class NeuromorphicDatasetFolder(DatasetFolder):
         1. Download dataset files to ``root/download`` (if supported) or verify existing downloads.
         2. Extract downloaded files into ``root/extract`` by calling :meth:`extract_downloaded_files`.
         3. Convert extracted data into raw dataset by calling :meth:`create_raw_from_extracted`, and save the raw dataset to :attr:`raw_root`.
+
+        :return: None
+        :rtype: None
         """
         if self.raw_root.exists():
             return
@@ -1039,8 +1076,8 @@ class NeuromorphicDatasetFolder(DatasetFolder):
         else:
             # not reachable
             raise NotImplementedError(
-                f"Please specify the frames number or duration or "
-                f"custom integrate function."
+                "Please specify the frames number or duration or "
+                "custom integrate function."
             )
 
     def get_root_when_train_is_none(self, _root: Path) -> Path:
@@ -1086,6 +1123,27 @@ class NeuromorphicDatasetFolder(DatasetFolder):
     @classmethod
     def get_extensions(cls) -> Tuple[str]:
         r"""
+        **API Language:**
+        :ref:`中文 <NeuromorphicDatasetFolder.get_extensions-cn>` | :ref:`English <NeuromorphicDatasetFolder.get_extensions-en>`
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.get_extensions-cn:
+
+        * **中文**
+
+        返回处理后的数据集样本的有效文件扩展名。
+
+        这些扩展名将传递给 :class:`DatasetFolder <torchvision.datasets.DatasetFolder>`
+        以识别有效的数据文件。
+
+        :return: 支持的文件扩展名元组, 当前为 ``('.npy', '.npz')``。
+        :rtype: Tuple[str]
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.get_extensions-en:
+
         * **English**
 
         Return valid file extensions for processed dataset samples.
@@ -1093,7 +1151,7 @@ class NeuromorphicDatasetFolder(DatasetFolder):
         These extensions are passed to :class:`DatasetFolder <torchvision.datasets.DatasetFolder>`
         to identify valid data files.
 
-        :return: tuple of supported file extensions.
+        :return: tuple of supported file extensions, currently ``('.npy', '.npz')``.
         :rtype: Tuple[str]
         """
         return (".npy", ".npz")
@@ -1111,8 +1169,8 @@ class NeuromorphicDatasetFolder(DatasetFolder):
 
         * **中文**
 
-        :return: 一个元组 ``(H, W)``，其中 ``H`` 是数据的高度，``W`` 是数据的宽度。
-            例如，对于 DVS128 Gesture 数据集，此函数返回 ``(128, 128)``。
+        :return: 一个元组 ``(H, W)``, 其中 ``H`` 是数据的高度, ``W`` 是数据的宽度。
+            例如, 对于 DVS128 Gesture 数据集, 此函数返回 ``(128, 128)``。
         :rtype: Tuple[int]
         ----
 
@@ -1120,7 +1178,7 @@ class NeuromorphicDatasetFolder(DatasetFolder):
 
         * **English**
 
-        :return: a tuple ``(H, W)``, where ``H`` is the height of the data and ``W`` is the weight of the data.
+        :return: a tuple ``(H, W)``, where ``H`` is the height of the data and ``W`` is the width of the data.
             For example, this function returns ``(128, 128)`` for the DVS128 Gesture dataset.
         :rtype: Tuple[int]
         """
@@ -1129,10 +1187,27 @@ class NeuromorphicDatasetFolder(DatasetFolder):
     @classmethod
     @abc.abstractmethod
     def resource_url_md5(cls) -> list:
-        """
+        r"""
+        **API Language:**
+        :ref:`中文 <NeuromorphicDatasetFolder.resource_url_md5-cn>` | :ref:`English <NeuromorphicDatasetFolder.resource_url_md5-en>`
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.resource_url_md5-cn:
+
+        * **中文**
+
+        :return: 一个列表 ``url``, 其中 ``url[i]`` 是一个元组, 包含第 ``i`` 个数据文件的文件名、下载链接和 MD5。
+        :rtype: list
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.resource_url_md5-en:
+
         * **English**
 
-        :return: a list ``url`` that ``url[i]`` is a tuple, which contains the i-th file's name, download link, and MD5
+        :return: a list ``url`` where ``url[i]`` is a tuple containing the
+            i-th file's name, download link, and MD5 checksum.
         :rtype: list
         """
         pass
@@ -1140,10 +1215,27 @@ class NeuromorphicDatasetFolder(DatasetFolder):
     @classmethod
     @abc.abstractmethod
     def downloadable(cls) -> bool:
-        """
+        r"""
+        **API Language:**
+        :ref:`中文 <NeuromorphicDatasetFolder.downloadable-cn>` | :ref:`English <NeuromorphicDatasetFolder.downloadable-en>`
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.downloadable-cn:
+
+        * **中文**
+
+        :return: 数据集是否可以通过 Python 代码直接下载。若返回 ``False``, 则需要用户手动下载。
+        :rtype: bool
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.downloadable-en:
+
         * **English**
 
-        :return: whether the dataset can be directly downloaded by python codes. If not, the user have to download it manually
+        :return: whether the dataset can be downloaded directly by Python code.
+            If ``False``, users need to download it manually.
         :rtype: bool
         """
         pass
@@ -1151,37 +1243,89 @@ class NeuromorphicDatasetFolder(DatasetFolder):
     @classmethod
     @abc.abstractmethod
     def extract_downloaded_files(cls, download_root: Path, extract_root: Path):
-        """
-        * **English**
+        r"""
+        **API Language:**
+        :ref:`中文 <NeuromorphicDatasetFolder.extract_downloaded_files-cn>` | :ref:`English <NeuromorphicDatasetFolder.extract_downloaded_files-en>`
 
-        This function defines how to extract downloaded files.
+        ----
 
-        :param download_root: root directory path which saves downloaded dataset files
+        .. _NeuromorphicDatasetFolder.extract_downloaded_files-cn:
+
+        * **中文**
+
+        定义如何解压已下载的数据文件。
+
+        :param download_root: 保存已下载数据文件的根目录。
         :type download_root: pathlib.Path
 
-        :param extract_root: root directory path which saves extracted files from downloaded files
+        :param extract_root: 保存解压后文件的根目录。
         :type extract_root: pathlib.Path
 
         :return: None
+        :rtype: None
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.extract_downloaded_files-en:
+
+        * **English**
+
+        Define how downloaded dataset files are extracted.
+
+        :param download_root: root directory that stores downloaded dataset
+            files.
+        :type download_root: pathlib.Path
+
+        :param extract_root: root directory that stores files extracted from
+            the downloaded archives.
+        :type extract_root: pathlib.Path
+
+        :return: None
+        :rtype: None
         """
         pass
 
     @classmethod
     @abc.abstractmethod
     def create_raw_from_extracted(cls, extract_root: Path, raw_root: Path):
-        """
-        * **English**
+        r"""
+        **API Language:**
+        :ref:`中文 <NeuromorphicDatasetFolder.create_raw_from_extracted-cn>` | :ref:`English <NeuromorphicDatasetFolder.create_raw_from_extracted-en>`
 
-        This function defines how to convert the extracted dataset in
-        ``extract_root`` to raw dataset and save the converted files to
-        ``raw_root``.
+        ----
 
-        :param extract_root: root directory where extracted files are saved
+        .. _NeuromorphicDatasetFolder.create_raw_from_extracted-cn:
+
+        * **中文**
+
+        定义如何将 ``extract_root`` 中的解压数据转换为原始数据集格式, 并保存到 ``raw_root``。
+
+        :param extract_root: 保存解压后文件的根目录。
         :type extract_root: pathlib.Path
 
-        :param raw_root: root directory where raw dataset files are saved
+        :param raw_root: 保存转换后原始数据集文件的根目录。
         :type raw_root: pathlib.Path
 
         :return: None
+        :rtype: None
+
+        ----
+
+        .. _NeuromorphicDatasetFolder.create_raw_from_extracted-en:
+
+        * **English**
+
+        Define how to convert the extracted dataset in ``extract_root`` to the
+        raw dataset format and save the converted files to ``raw_root``.
+
+        :param extract_root: root directory where extracted files are saved.
+        :type extract_root: pathlib.Path
+
+        :param raw_root: root directory where converted raw dataset files are
+            saved.
+        :type raw_root: pathlib.Path
+
+        :return: None
+        :rtype: None
         """
         pass

@@ -1,14 +1,13 @@
-from typing import Callable, Optional
 import math
+from typing import Callable, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from .. import surrogate, base
+from .. import base, surrogate
 from .base_node import BaseNode
 from .lif import LIFNode
-
 
 __all__ = ["GatedLIFNode", "KLIFNode", "CUBALIFNode", "LIAFNode"]
 
@@ -23,7 +22,7 @@ class GatedLIFNode(base.MemoryModule):
         init_tau: float = 0.25,
         init_v_threshold: float = 0.5,
         init_conduct: float = 0.5,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         step_mode="m",
         backend="torch",
     ):
@@ -66,7 +65,7 @@ class GatedLIFNode(base.MemoryModule):
         :type init_conduct: float
 
         :param surrogate_function: 反向传播中用于计算脉冲函数梯度的替代函数
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param step_mode: 步进模式，仅支持 ``'m'`` （多步）
         :type step_mode: str
@@ -112,7 +111,7 @@ class GatedLIFNode(base.MemoryModule):
         :type init_conduct: float
 
         :param surrogate_function: surrogate function used to compute spike gradients during backpropagation
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param step_mode: step mode, only `'m'` (multi-step) is supported
         :type step_mode: str
@@ -276,7 +275,7 @@ class KLIFNode(BaseNode):
         decay_input: bool = True,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = False,
         step_mode="s",
         backend="torch",
@@ -353,7 +352,7 @@ class KLIFNode(BaseNode):
         :type v_reset: Optional[float]
 
         :param surrogate_function: 反向传播中用于近似阶跃函数梯度的替代函数
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: 是否在反向传播时将 reset 过程从计算图中分离
         :type detach_reset: bool
@@ -380,7 +379,7 @@ class KLIFNode(BaseNode):
 
         Constructor of the K-based Leaky Integrate-and-Fire (KLIF) neuron.
 
-        The KLIF neuron is proposed in  
+        The KLIF neuron is proposed in
         `KLIF: An optimized spiking neuron unit for tuning surrogate gradient slope and membrane potential <https://arxiv.org/abs/2302.09238>`_.
         It can be regarded as a leaky integrator with a modified firing and reset mechanism compared to conventional LIF neurons.
 
@@ -440,7 +439,7 @@ class KLIFNode(BaseNode):
 
         :param surrogate_function: surrogate function used to approximate the gradient
             of the Heaviside step function during backpropagation
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: whether to detach the reset operation from the computation graph
         :type detach_reset: bool
@@ -480,7 +479,6 @@ class KLIFNode(BaseNode):
         return ("torch",)
 
     @staticmethod
-    @torch.jit.script
     def neuronal_charge_decay_input(
         x: torch.Tensor, v: torch.Tensor, v_reset: float, tau: float, k: torch.Tensor
     ):
@@ -489,7 +487,6 @@ class KLIFNode(BaseNode):
         return v
 
     @staticmethod
-    @torch.jit.script
     def neuronal_charge_no_decay_input(
         x: torch.Tensor, v: torch.Tensor, v_reset: float, tau: float, k: torch.Tensor
     ):
@@ -521,20 +518,22 @@ class KLIFNode(BaseNode):
         if self.scale_reset:
             if self.v_reset is None:
                 # soft reset
-                self.v = self.jit_soft_reset(self.v, spike_d, self.v_threshold) / self.k
+                self.v = (
+                    self.apply_soft_reset(self.v, spike_d, self.v_threshold) / self.k
+                )
 
             else:
                 # hard reset
-                self.v = self.jit_hard_reset(self.v / self.k, spike_d, self.v_reset)
+                self.v = self.apply_hard_reset(self.v / self.k, spike_d, self.v_reset)
 
         else:
             if self.v_reset is None:
                 # soft reset
-                self.v = self.jit_soft_reset(self.v, spike_d, self.v_threshold)
+                self.v = self.apply_soft_reset(self.v, spike_d, self.v_threshold)
 
             else:
                 # hard reset
-                self.v = self.jit_hard_reset(self.v, spike_d, self.v_reset)
+                self.v = self.apply_hard_reset(self.v, spike_d, self.v_reset)
 
 
 class CUBALIFNode(BaseNode):
@@ -544,7 +543,7 @@ class CUBALIFNode(BaseNode):
         v_decay: float = 0.75,
         v_threshold: float = 0.5,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Rect(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Rect(),
     ):
         """
         CUrrent-BAsed LIF neuron.
@@ -567,7 +566,7 @@ class CUBALIFNode(BaseNode):
         :type v_reset: Optional[float]
 
         :param surrogate_function: surrogate function used to compute spike gradients during backpropagation
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
         """
         super().__init__(v_threshold, v_reset, surrogate_function)
 
@@ -667,7 +666,7 @@ class LIAFNode(LIFNode):
         self.threshold_related = threshold_related
 
         assert self.backend == "torch", "LIAFNode only supports for backend='torch'!"
-        assert self.single_step_cupy_fp32_inference == False, (
+        assert not self.single_step_cupy_fp32_inference, (
             "LIAFNode does not support for single_step_cupy_fp32_inference!"
         )
 

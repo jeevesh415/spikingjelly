@@ -28,8 +28,10 @@
     :caption: Advanced
 
     /tutorials/en/cupy_neuron
-    /tutorials/en/triton_flexsn
+    /tutorials/en/triton_backend
+    /tutorials/en/flexsn
     /tutorials/en/memopt
+    /tutorials/en/distributed_training
     /tutorials/en/train_large_scale_snn
     /tutorials/en/spikformer
     /tutorials/en/lava_exchange

@@ -1,11 +1,10 @@
 from abc import abstractmethod
-from typing import Callable, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from .. import surrogate, base
-
+from .. import base, surrogate
 
 __all__ = [
     "SimpleBaseNode",
@@ -19,7 +18,7 @@ class SimpleBaseNode(base.MemoryModule):
         self,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = False,
         step_mode="s",
     ):
@@ -83,7 +82,7 @@ class BaseNode(base.MemoryModule):
         self,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = False,
         step_mode="s",
         backend="torch",
@@ -109,7 +108,7 @@ class BaseNode(base.MemoryModule):
         :type v_reset: Optional[float]
 
         :param surrogate_function: 反向传播时用来计算脉冲函数梯度的替代函数
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: 是否将reset过程的计算图分离
         :type detach_reset: bool
@@ -142,7 +141,7 @@ class BaseNode(base.MemoryModule):
         :type v_reset: Optional[float]
 
         :param surrogate_function: the function for calculating surrogate gradients of the heaviside step function in backward
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: whether detach the computation graph of reset in backward
         :type detach_reset: bool
@@ -188,6 +187,7 @@ class BaseNode(base.MemoryModule):
         # used for cupy backend
         self.forward_kernel = None
         self.backward_kernel = None
+        self._inductor_compiled_graphs = {}
 
     @property
     def store_v_seq(self):
@@ -201,14 +201,12 @@ class BaseNode(base.MemoryModule):
                 self.register_memory("v_seq", None)
 
     @staticmethod
-    @torch.jit.script
-    def jit_hard_reset(v: torch.Tensor, spike: torch.Tensor, v_reset: float):
+    def apply_hard_reset(v: torch.Tensor, spike: torch.Tensor, v_reset: float):
         v = (1.0 - spike) * v + spike * v_reset
         return v
 
     @staticmethod
-    @torch.jit.script
-    def jit_soft_reset(v: torch.Tensor, spike: torch.Tensor, v_threshold: float):
+    def apply_soft_reset(v: torch.Tensor, spike: torch.Tensor, v_threshold: float):
         v = v - spike * v_threshold
         return v
 
@@ -287,11 +285,11 @@ class BaseNode(base.MemoryModule):
 
         if self.v_reset is None:
             # soft reset
-            self.v = self.jit_soft_reset(self.v, spike_d, self.v_threshold)
+            self.v = self.apply_soft_reset(self.v, spike_d, self.v_threshold)
 
         else:
             # hard reset
-            self.v = self.jit_hard_reset(self.v, spike_d, self.v_reset)
+            self.v = self.apply_hard_reset(self.v, spike_d, self.v_reset)
 
     def extra_repr(self):
         return f"v_threshold={self.v_threshold}, v_reset={self.v_reset}, detach_reset={self.detach_reset}, step_mode={self.step_mode}, backend={self.backend}"
@@ -354,7 +352,79 @@ class BaseNode(base.MemoryModule):
     def v_float_to_tensor(self, x: torch.Tensor):
         if isinstance(self.v, float):
             v_init = self.v
-            self.v = torch.full_like(x.data, v_init)
+            self.v = torch.full_like(x, v_init, requires_grad=False)
+        elif isinstance(self.v, torch.Tensor):
+            if self.v.shape != x.shape:
+                self.v = torch.full_like(
+                    x,
+                    self.v_reset if self.v_reset is not None else 0.0,
+                    requires_grad=False,
+                )
+            elif self.v.dtype != x.dtype or self.v.device != x.device:
+                self.v = self.v.to(dtype=x.dtype, device=x.device)
+
+    def _compile_inductor_graph(self, cache_key, fn):
+        compiled = self._inductor_compiled_graphs.get(cache_key)
+        if compiled is not None:
+            return compiled
+        if not hasattr(torch, "compile"):
+            raise RuntimeError(
+                f"{self._get_name()} backend='inductor' requires torch.compile."
+            )
+        compile_kwargs = {"backend": "inductor"}
+        try:
+            compiled = torch.compile(
+                fn,
+                **compile_kwargs,
+                options={
+                    "triton.cudagraphs": False,
+                    "triton.cudagraph_trees": False,
+                },
+            )
+        except TypeError:
+            compiled = torch.compile(fn, **compile_kwargs)
+        self._inductor_compiled_graphs[cache_key] = compiled
+        return compiled
+
+    @staticmethod
+    def _canonicalize_inductor_tensor(tensor: torch.Tensor) -> torch.Tensor:
+        return tensor.contiguous()
+
+    @staticmethod
+    def _inductor_tensor_signature(tensor: torch.Tensor):
+        return (
+            tuple(tensor.shape),
+            tensor.ndim,
+            str(tensor.dtype),
+            tensor.device.type,
+            tensor.device.index,
+            tensor.is_contiguous(),
+            bool(tensor.requires_grad),
+        )
+
+    def _inductor_runtime_cache_key(self, *tensors: torch.Tensor):
+        return tuple(self._inductor_tensor_signature(t) for t in tensors)
+
+    def _surrogate_inductor_cache_key(self):
+        sg = self.surrogate_function
+        params = tuple(sorted(getattr(sg, "_sg_params", {}).items()))
+        return (
+            type(sg).__module__,
+            type(sg).__qualname__,
+            getattr(sg, "spiking", None),
+            params,
+        )
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        if "_inductor_compiled_graphs" in state:
+            state["_inductor_compiled_graphs"] = {}
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        if not hasattr(self, "_inductor_compiled_graphs"):
+            self._inductor_compiled_graphs = {}
 
 
 class NonSpikingBaseNode(nn.Module, base.MultiStepModule):

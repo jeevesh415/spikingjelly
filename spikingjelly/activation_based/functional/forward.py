@@ -1,9 +1,8 @@
 from typing import Callable, Union
 
 import torch
-from torch import Tensor
 import torch.nn as nn
-
+from torch import Tensor
 
 __all__ = [
     "multi_step_forward",
@@ -30,6 +29,9 @@ def multi_step_forward(
 
     * **中文**
 
+    在单步模块 ``single_step_module`` 上使用多步前向传播。函数内部将执行一个for循环，
+    执行 ``T`` 次单步前向传播。若 ``single_step_module`` 为多个模块，则每个时间步都会按顺序依次执行这些模块。
+
     :param x_seq: ``shape=[T, batch_size, ...]`` 的输入tensor
     :type x_seq: torch.Tensor
 
@@ -39,14 +41,16 @@ def multi_step_forward(
     :return: ``shape=[T, batch_size, ...]`` 的输出tensor
     :rtype: torch.Tensor
 
-    在有状态的单步模块 ``single_step_module`` 上使用多步前向传播。函数内部将执行一个for循环，
-    执行 ``T`` 次单步前向传播。
-
     ----
 
     .. _multi_step_forward-en:
 
     * **English**
+
+    Applies multi-step forward on ``single_step_module``. The function runs a
+    for loop to execute single-step forward for ``T`` times. If
+    ``single_step_module`` contains multiple modules, they are applied
+    sequentially at each time-step.
 
     :param x_seq: the input tensor with ``shape=[T, batch_size, ...]``
     :type x_seq: torch.Tensor
@@ -56,9 +60,6 @@ def multi_step_forward(
 
     :return: the output tensor with ``shape=[T, batch_size, ...]``
     :rtype: torch.Tensor
-
-    Applies multi-step forward on stateful ``single_step_module``. The function
-    runs a for loop to execute single-step forward for ``T`` times.
     """
     y_seq = []
     if isinstance(single_step_module, (list, tuple, nn.Sequential)):
@@ -116,7 +117,7 @@ def t_last_multi_step_forward(
     :type single_step_module: Union[nn.Module, list[nn.Module], tuple[nn.Module], nn.Sequential, Callable]
 
     :return: the output tensor with ``shape=[batch_size, ..., T]``
-    :rtype: torch.torch.Tensor
+    :rtype: torch.Tensor
     """
     y_seq = []
     if isinstance(single_step_module, (list, tuple, nn.Sequential)):
@@ -145,7 +146,7 @@ def chunk_multi_step_forward(
 
     * **中文**
 
-    将 ``shape = [T, *]`` 的输入 ``x_seq`` 拆分成多个 ``shape = [split_size, *]`` 的小tensor(若 ``T % split_size != 0``，最后一个tensor的 ``shape[0]`` 会小于 ``split_size``)，然后逐个输入到 ``multi_step_module`` 中，再将输出重新拼接为 ``shape = [split_size, *]``。
+    将 ``shape = [T, *]`` 的输入 ``x_seq`` 拆分成多个 ``shape = [split_size, *]`` 的小tensor(若 ``T % split_size != 0``，最后一个tensor的 ``shape[0]`` 会小于 ``split_size``)，然后逐个输入到 ``multi_step_module`` 中，再沿着 ``dim=0`` 将输出重新拼接，因此输出的首维长度仍为 ``T``。
 
     ``chunk_multi_step_forward`` 可以在使用很大的 ``T`` 进行不带梯度的推理(例如ANN2SNN)时使用，能够减少内存消耗量。
 
@@ -169,7 +170,7 @@ def chunk_multi_step_forward(
 
     Splits the input ``x_seq`` with ``shape = [T, *]`` to many tensor chunks with ``shape = [split_size, *]`` (if ``T % split_size != 0``,
     ``shape[0]`` of the last tensor chunk will be smaller than ``split_size``), and sends chunks to ``multi_step_module``,
-    then concatenates the outputs to  ``shape = [split_size, *]``.
+    then concatenates the outputs back along ``dim=0``, so the output keeps the original leading length ``T``.
 
     ``chunk_multi_step_forward`` can be used for inference with a large ``T`` (e.g., ANN2SNN) to reduce the memory consumption.
 
@@ -237,7 +238,7 @@ def seq_to_ann_forward(
     :param stateless_module: 单个或多个无状态网络层
     :type stateless_module: Union[torch.nn.Module, list, tuple, torch.nn.Sequential, Callable]
 
-    :return: the output tensor with ``shape=[T, batch_size, ...]``
+    :return: ``shape=[T, batch_size, ...]`` 的输出tensor
     :rtype: torch.Tensor
 
     ----
@@ -290,7 +291,11 @@ def t_last_seq_to_ann_forward(
     .. note::
         SpikingJelly中默认序列数据形状为 ``shape=[T, batch_size, ...]``。
         但此函数是用于另一种格式，即 ``shape=[batch_size, ..., T]``。
-        当使用 ``torch >= 2.0.0`` 时也有并行加速的效果。
+        当 ``torch.vmap`` 可用时，此函数会直接调用
+        ``torch.vmap(stateless_module, in_dims=-1, out_dims=-1)`` 并行地对时间维执行前向传播。
+        因此此路径要求 ``stateless_module`` 是可直接调用的对象，例如 ``nn.Module`` 或
+        ``nn.Sequential``。普通的 ``list`` 或 ``tuple`` 仅在 ``torch.vmap`` 不可用、退化到
+        :func:`t_last_multi_step_forward` 时才可用。
 
     .. note::
         不能用于BN层，因为BN层的running mean/var是输入依赖的。
@@ -302,7 +307,7 @@ def t_last_seq_to_ann_forward(
     :param stateless_module: 单个或多个无状态网络层
     :type stateless_module: Union[torch.nn.Module, list, tuple, torch.nn.Sequential, Callable]
 
-    :return: the output tensor with ``shape=[batch_size, ..., T]``
+    :return: ``shape=[batch_size, ..., T]`` 的输出tensor
     :rtype: torch.Tensor
 
     ----
@@ -316,12 +321,24 @@ def t_last_seq_to_ann_forward(
     .. admonition:: Note
         :class: note
 
-        The default shape of sequence data in SpikingJelly is ``shape=[T, batch_size, ...]``. However, this function is used for the other data format where  ``shape=[batch_size, ..., T]``. When using ``torch >= 2.0.0``, this function is computing in parallel.
+        The default shape of sequence data in SpikingJelly is
+        ``shape=[T, batch_size, ...]``. However, this function is used for the
+        other data format where ``shape=[batch_size, ..., T]``. When
+        ``torch.vmap`` is available, this function calls
+        ``torch.vmap(stateless_module, in_dims=-1, out_dims=-1)`` to apply the
+        forward pass over the time dimension in parallel. Therefore, this path
+        requires ``stateless_module`` to be directly callable, e.g.
+        ``nn.Module`` or ``nn.Sequential``. Plain ``list`` and ``tuple`` inputs
+        only work on the fallback path that uses
+        :func:`t_last_multi_step_forward` when ``torch.vmap`` is unavailable.
 
     .. admonition:: Note
         :class: note
 
-        This function can not be applied to wrap BN because its running mean/var depends on inputs. The BN can be computed in parallel as long as the input is regarded as ``shape = [N, C, ..]``, which can be implemented by user manually.
+        This function can not be applied to wrap BN because its running mean/var
+        depends on inputs. The BN can be computed in parallel as long as the
+        input is regarded as ``shape = [N, C, ..]``, which can be implemented
+        by user manually.
 
     :param x_seq: the input tensor with ``shape=[batch_size, ..., T]``
     :type x_seq: torch.Tensor

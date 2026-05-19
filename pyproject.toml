@@ -21,7 +21,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.2.0",
+    "torch>=2.6.0",
     "torchvision",
     "torchaudio",
     "tensorboard",
@@ -53,7 +53,7 @@ lightning = ["lightning", "jsonargparse[signatures]"]
 dev = [
     "pytest",
     "pydata-sphinx-theme>=0.16.1",
-    "sphinx>=8.0.0",
+    "sphinx>=8.0.0,<9",
 ]
 
 [project.urls]
@@ -68,3 +68,6 @@ line-length = 88
 [tool.ruff.format]
 docstring-code-format = true
 quote-style = "double"
+
+[tool.ruff.lint]
+ignore = ["E402", "E731", "E741", "F403"]

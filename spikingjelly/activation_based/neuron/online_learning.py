@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import Optional
 
 import torch
 
@@ -10,13 +10,38 @@ __all__ = ["OTTTLIFNode", "SLTTLIFNode"]
 
 
 class OTTTLIFNode(LIFNode):
+    r"""
+    **API Language:**
+    :ref:`中文 <OTTTLIFNode-cn>` | :ref:`English <OTTTLIFNode-en>`
+
+    ----
+
+    .. _OTTTLIFNode-cn:
+
+    * **中文**
+
+    用于 OTTT 训练的单步 LIF 神经元。该类继承 :class:`LIFNode` 的放电行为，但仅支持
+    ``step_mode='s'`` 和 ``backend='torch'``，并在训练时额外维护迹以供后续模块使用。
+
+    ----
+
+    .. _OTTTLIFNode-en:
+
+    * **English**
+
+    Single-step LIF neuron for OTTT training. This class inherits the firing
+    behavior of :class:`LIFNode`, but only supports ``step_mode='s'`` and
+    ``backend='torch'``. During training it also maintains a trace for
+    downstream modules.
+    """
+
     def __init__(
         self,
         tau: float = 2.0,
         decay_input: bool = False,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = None,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = True,
         step_mode="s",
         backend="torch",
@@ -52,7 +77,7 @@ class OTTTLIFNode(LIFNode):
         :type v_reset: Optional[float]
 
         :param surrogate_function: 反向传播时用来计算脉冲函数梯度的替代函数
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: 是否将 reset 过程的计算图分离。
             该参数在本模块中不起作用，仅为保持代码接口统一而保留
@@ -61,15 +86,12 @@ class OTTTLIFNode(LIFNode):
         :param step_mode: 步进模式。为了保证神经元的显存占用较小，仅支持 ``'s'`` （单步）
         :type step_mode: str
 
-        :param backend: 使用的后端。不同 ``step_mode`` 可能支持不同的后端。
-            可以通过打印 ``self.supported_backends`` 查看当前步进模式支持的后端。
-            在支持的情况下，使用 ``'cupy'`` 或 ``'triton'`` 后端可获得更高的运行速度
+        :param backend: 使用的后端。当前实现仅支持 ``'torch'``，其他取值会在前向传播时触发
+            ``ValueError``
         :type backend: str
 
-        :param store_v_seq: 在使用 ``step_mode = 'm'`` 且输入形状为 ``[T, N, *]`` 时，
-            是否保存中间各时间步的膜电位 ``self.v_seq``，其形状为 ``[T, N, *]``。
-            若设置为 ``False``，则计算完成后仅保留最后一个时间步的膜电位
-            ``self.v``，其形状为 ``[N, *]``。通常设置为 ``False`` 以节省内存
+        :param store_v_seq: 为保持与 :class:`LIFNode` 接口一致而保留的参数。本类仅支持
+            单步模式，不会使用 ``self.v_seq``
         :type store_v_seq: bool
 
         ----
@@ -102,7 +124,7 @@ class OTTTLIFNode(LIFNode):
 
         :param surrogate_function: the function used to compute surrogate gradients
             of the Heaviside step function in backward propagation
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: whether to detach the computation graph of the reset
             operation in backward propagation. This parameter has no effect in
@@ -113,18 +135,14 @@ class OTTTLIFNode(LIFNode):
             only ``'s'`` (single-step) mode is supported
         :type step_mode: str
 
-        :param backend: backend for this neuron layer. Different ``step_mode`` may
-            support different backends. Users can print ``self.supported_backends``
-            to check the supported backends of the current step mode. When supported,
-            using ``'cupy'`` or ``'triton'`` backend provides faster execution
+        :param backend: backend for this neuron layer. The current
+            implementation only supports ``'torch'``; other values raise
+            ``ValueError`` during forward
         :type backend: str
 
-        :param store_v_seq: when using ``step_mode = 'm'`` with input of shape
-            ``[T, N, *]``, this option controls whether storing the membrane
-            potential at each time step into ``self.v_seq`` with shape ``[T, N, *]``.
-            If set to ``False``, only the membrane potential at the last time step
-            will be stored in ``self.v`` with shape ``[N, *]``, which can reduce
-            memory consumption
+        :param store_v_seq: retained for interface consistency with
+            :class:`LIFNode`. This class only supports single-step mode and does
+            not use ``self.v_seq``
         :type store_v_seq: bool
         """
 
@@ -184,14 +202,13 @@ class OTTTLIFNode(LIFNode):
                 )
 
     @staticmethod
-    @torch.jit.script
     def track_trace(spike: torch.Tensor, trace: torch.Tensor, tau: float):
         with torch.no_grad():
             trace = trace * (1.0 - 1.0 / tau) + spike
         return trace
 
     def single_step_forward(self, x: torch.Tensor):
-        """
+        r"""
         **API Language:**
         :ref:`中文 <OTTTLIFNode.single_step_forward-cn>` | :ref:`English <OTTTLIFNode.single_step_forward-en>`
 
@@ -205,6 +222,12 @@ class OTTTLIFNode(LIFNode):
 
         训练时需要将后续参数模块用layer.py中定义的GradwithTrace进行包装，根据迹计算梯度。
 
+        :param x: 当前时间步的输入张量
+        :type x: torch.Tensor
+
+        :return: 训练模式下返回 ``[spike, trace]``，推理模式下仅返回 ``spike``
+        :rtype: Union[list[torch.Tensor], torch.Tensor]
+
         ----
 
         .. _OTTTLIFNode.single_step_forward-en:
@@ -214,6 +237,12 @@ class OTTTLIFNode(LIFNode):
         Output spike and trace during training; output spike during inference.
 
         During training, successive parametric modules shoule be wrapped by GradwithTrace defined in layer.py, to calculate gradients with traces.
+
+        :param x: input tensor at the current time step
+        :type x: torch.Tensor
+
+        :return: ``[spike, trace]`` in training mode, and ``spike`` in eval mode
+        :rtype: Union[list[torch.Tensor], torch.Tensor]
         """
 
         if not hasattr(self, "v"):
@@ -237,43 +266,50 @@ class OTTTLIFNode(LIFNode):
             else:
                 raise ValueError(self.backend)
         else:
-            if self.v_reset is None:
-                if self.decay_input:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_soft_reset_decay_input(
-                            x, self.v, self.v_threshold, self.tau
-                        )
-                    )
-                else:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_soft_reset_no_decay_input(
-                            x, self.v, self.v_threshold, self.tau
-                        )
-                    )
-            else:
-                if self.decay_input:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_hard_reset_decay_input(
-                            x, self.v, self.v_threshold, self.v_reset, self.tau
-                        )
-                    )
-                else:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_hard_reset_no_decay_input(
-                            x, self.v, self.v_threshold, self.v_reset, self.tau
-                        )
-                    )
+            spike, self.v = self._eval_single_step_forward(
+                x,
+                self.v,
+                self.v_threshold,
+                self.v_reset,
+                self.tau,
+                self.decay_input,
+            )
             return spike
 
 
 class SLTTLIFNode(LIFNode):
+    r"""
+    **API Language:**
+    :ref:`中文 <SLTTLIFNode-cn>` | :ref:`English <SLTTLIFNode-en>`
+
+    ----
+
+    .. _SLTTLIFNode-cn:
+
+    * **中文**
+
+    用于 SLTT 训练的单步 LIF 神经元。该类继承 :class:`LIFNode` 的放电行为，但仅支持
+    ``step_mode='s'`` 和 ``backend='torch'``，并通过截断时间梯度来降低训练的时间与显存开销。
+
+    ----
+
+    .. _SLTTLIFNode-en:
+
+    * **English**
+
+    Single-step LIF neuron for SLTT training. This class inherits the firing
+    behavior of :class:`LIFNode`, but only supports ``step_mode='s'`` and
+    ``backend='torch'``. It reduces training time and memory cost by truncating
+    temporal gradients.
+    """
+
     def __init__(
         self,
         tau: float = 2.0,
         decay_input: bool = True,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = True,
         step_mode="s",
         backend="torch",
@@ -310,7 +346,7 @@ class SLTTLIFNode(LIFNode):
         :type v_reset: Optional[float]
 
         :param surrogate_function: 反向传播时用来计算脉冲函数梯度的替代函数
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: 是否将 reset 过程的计算图分离。
             该参数在本模块中不起作用，仅为保持代码接口统一而保留
@@ -319,15 +355,12 @@ class SLTTLIFNode(LIFNode):
         :param step_mode: 步进模式。为了保证神经元的显存占用较小，仅支持 ``'s'`` （单步）
         :type step_mode: str
 
-        :param backend: 使用的后端。不同 ``step_mode`` 可能支持不同的后端。
-            可以通过打印 ``self.supported_backends`` 查看当前步进模式支持的后端。
-            在支持的情况下，使用 ``'cupy'`` 或 ``'triton'`` 后端可获得更高的运行速度
+        :param backend: 使用的后端。当前实现仅支持 ``'torch'``，其他取值会在前向传播时触发
+            ``ValueError``
         :type backend: str
 
-        :param store_v_seq: 在使用 ``step_mode = 'm'`` 且输入形状为 ``[T, N, *]`` 时，
-            是否保存中间各时间步的膜电位 ``self.v_seq``，其形状为 ``[T, N, *]``。
-            若设置为 ``False``，则计算完成后仅保留最后一个时间步的膜电位
-            ``self.v``，其形状为 ``[N, *]``。通常设置为 ``False`` 以节省内存
+        :param store_v_seq: 为保持与 :class:`LIFNode` 接口一致而保留的参数。本类仅支持
+            单步模式，不会使用 ``self.v_seq``
         :type store_v_seq: bool
 
         ----
@@ -360,7 +393,7 @@ class SLTTLIFNode(LIFNode):
 
         :param surrogate_function: the function used to compute surrogate gradients
             of the Heaviside step function in backward propagation
-        :type surrogate_function: Callable
+        :type surrogate_function: surrogate.SurrogateFunctionBase
 
         :param detach_reset: whether to detach the computation graph of the reset
             operation in backward propagation. This parameter has no effect in
@@ -371,18 +404,14 @@ class SLTTLIFNode(LIFNode):
             only ``'s'`` (single-step) mode is supported
         :type step_mode: str
 
-        :param backend: backend for this neuron layer. Different ``step_mode`` may
-            support different backends. Users can print ``self.supported_backends``
-            to check the supported backends of the current step mode. When supported,
-            using ``'cupy'`` or ``'triton'`` backend provides faster execution
+        :param backend: backend for this neuron layer. The current
+            implementation only supports ``'torch'``; other values raise
+            ``ValueError`` during forward
         :type backend: str
 
-        :param store_v_seq: when using ``step_mode = 'm'`` with input of shape
-            ``[T, N, *]``, this option controls whether storing the membrane
-            potential at each time step into ``self.v_seq`` with shape ``[T, N, *]``.
-            If set to ``False``, only the membrane potential at the last time step
-            will be stored in ``self.v`` with shape ``[N, *]``, which can reduce
-            memory consumption
+        :param store_v_seq: retained for interface consistency with
+            :class:`LIFNode`. This class only supports single-step mode and does
+            not use ``self.v_seq``
         :type store_v_seq: bool
         """
         super().__init__(
@@ -433,6 +462,39 @@ class SLTTLIFNode(LIFNode):
                 )
 
     def single_step_forward(self, x: torch.Tensor):
+        r"""
+        **API Language:**
+        :ref:`中文 <SLTTLIFNode.single_step_forward-cn>` | :ref:`English <SLTTLIFNode.single_step_forward-en>`
+
+        ----
+
+        .. _SLTTLIFNode.single_step_forward-cn:
+
+        * **中文**
+
+        执行单步前向传播并返回当前时间步的输出脉冲。
+
+        :param x: 当前时间步的输入张量
+        :type x: torch.Tensor
+
+        :return: 当前时间步的输出脉冲
+        :rtype: torch.Tensor
+
+        ----
+
+        .. _SLTTLIFNode.single_step_forward-en:
+
+        * **English**
+
+        Run single-step forward propagation and return the output spike at the
+        current time step.
+
+        :param x: input tensor at the current time step
+        :type x: torch.Tensor
+
+        :return: output spike at the current time step
+        :rtype: torch.Tensor
+        """
         if not hasattr(self, "v"):
             if self.v_reset is None:
                 self.register_buffer("v", torch.zeros_like(x))
@@ -448,30 +510,12 @@ class SLTTLIFNode(LIFNode):
             else:
                 raise ValueError(self.backend)
         else:
-            if self.v_reset is None:
-                if self.decay_input:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_soft_reset_decay_input(
-                            x, self.v, self.v_threshold, self.tau
-                        )
-                    )
-                else:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_soft_reset_no_decay_input(
-                            x, self.v, self.v_threshold, self.tau
-                        )
-                    )
-            else:
-                if self.decay_input:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_hard_reset_decay_input(
-                            x, self.v, self.v_threshold, self.v_reset, self.tau
-                        )
-                    )
-                else:
-                    spike, self.v = (
-                        self.jit_eval_single_step_forward_hard_reset_no_decay_input(
-                            x, self.v, self.v_threshold, self.v_reset, self.tau
-                        )
-                    )
+            spike, self.v = self._eval_single_step_forward(
+                x,
+                self.v,
+                self.v_threshold,
+                self.v_reset,
+                self.tau,
+                self.decay_input,
+            )
             return spike

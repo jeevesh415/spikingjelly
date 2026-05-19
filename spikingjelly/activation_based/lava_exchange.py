@@ -1,14 +1,15 @@
+import logging
+from typing import Callable, Optional, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import logging
-from typing import Union, Callable, Optional
-from . import neuron, base, surrogate
+
+from . import base, neuron, surrogate
 
 _hw_bits = 12
 
 
-@torch.jit.script
 def step_quantize_forward(x: torch.Tensor, step: float):
     x = x / step
     torch.round_(x)
@@ -54,14 +55,12 @@ def quantize_8b(x, scale, descale=False):
         return step_quantize(x, step=2 / scale).clamp(-256 / scale, 255 / scale) * scale
 
 
-@torch.jit.script
 def right_shift_to_zero(x: torch.Tensor, bits: int):
     dtype = x.dtype
     assert dtype in (torch.int32, torch.int64)
     return (torch.sign(x) * (torch.abs(x) >> bits)).to(dtype)
 
 
-@torch.jit.script
 def _listep_forward(
     x: torch.Tensor,
     decay: torch.Tensor,
@@ -80,7 +79,6 @@ def _listep_forward(
     return output / w_scale
 
 
-@torch.jit.script
 def _listep_backward(
     grad_output: torch.Tensor,
     decay: torch.Tensor,
@@ -445,7 +443,7 @@ class CubaLIFNode(neuron.BaseNode):
         else:
             spike_d = spike
 
-        self.voltage_state = self.jit_hard_reset(
+        self.voltage_state = self.apply_hard_reset(
             self.voltage_state, spike_d, self.v_reset
         )
 

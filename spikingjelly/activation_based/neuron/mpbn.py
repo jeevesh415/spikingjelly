@@ -1,11 +1,10 @@
-from typing import Callable, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
 from .. import surrogate
 from .base_node import BaseNode
-
 
 __all__ = ["MPBNBaseNode", "MPBNLIFNode"]
 
@@ -15,7 +14,7 @@ class MPBNBaseNode(BaseNode):
         self,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = False,
         step_mode="s",
         backend="torch",
@@ -29,7 +28,8 @@ class MPBNBaseNode(BaseNode):
         bn_min_momentum: float = 0.005,
     ):
         r"""
-        * :ref:`API in English <MPBNBaseNode.__init__-en>`
+        **API Language:**
+        :ref:`中文 <MPBNBaseNode.__init__-cn>` | :ref:`English <MPBNBaseNode.__init__-en>`
 
         ----
 
@@ -287,12 +287,12 @@ class MPBNBaseNode(BaseNode):
     ):
         # "re-parameterize" threshold to enable TTA capability
         if isinstance(self.vbn, nn.Identity):
-            if self.fold_bn == True:
+            if self.fold_bn:
                 print(
-                    f"Re-parameterization has already been done in this neuron, skipping..."
+                    "Re-parameterization has already been done in this neuron, skipping..."
                 )
             else:
-                print(f"MPBN is not enabled in this neuron, skipping...")
+                print("MPBN is not enabled in this neuron, skipping...")
             return
         self.fold_bn = True
         if self.learnable_vth:  # if self.a is learned during training:
@@ -316,7 +316,7 @@ class MPBNLIFNode(MPBNBaseNode):
         decay_input: bool = False,
         v_threshold: float = 1.0,
         v_reset: Optional[float] = 0.0,
-        surrogate_function: Callable = surrogate.Sigmoid(),
+        surrogate_function: surrogate.SurrogateFunctionBase = surrogate.Sigmoid(),
         detach_reset: bool = False,
         step_mode="s",
         backend="torch",
@@ -330,7 +330,8 @@ class MPBNLIFNode(MPBNBaseNode):
         bn_min_momentum: float = 0.005,
     ):
         r"""
-        * :ref:`API in English <MPBNLIFNode.__init__-en>`
+        **API Language:**
+        :ref:`中文 <MPBNLIFNode.__init__-cn>` | :ref:`English <MPBNLIFNode.__init__-en>`
 
         ----
 
@@ -352,7 +353,7 @@ class MPBNLIFNode(MPBNBaseNode):
         :param decay_input: 输入是否参与衰减
         :type decay_input: bool
 
-        其余参数与 :class:`MPBNBaseNode <spikingjelly.activation_based.neuron.base_node.MPBNBaseNode>` 相同。
+        其余参数与 :class:`MPBNBaseNode` 相同。
 
         ----
 
@@ -375,7 +376,7 @@ class MPBNLIFNode(MPBNBaseNode):
         :param decay_input: whether the input current is decayed
         :type decay_input: bool
 
-        Other parameters are the same as :class:`MPBNBaseNode <spikingjelly.activation_based.neuron.base_node.MPBNBaseNode>`.
+        Other parameters are the same as :class:`MPBNBaseNode`.
         """
         assert isinstance(tau, float) and tau > 1.0
         super().__init__(
@@ -419,7 +420,6 @@ class MPBNLIFNode(MPBNBaseNode):
                 )
 
     @staticmethod
-    @torch.jit.script
     def neuronal_charge_decay_input_reset0(
         x: torch.Tensor, v: torch.Tensor, tau: float
     ):
@@ -427,7 +427,6 @@ class MPBNLIFNode(MPBNBaseNode):
         return v
 
     @staticmethod
-    @torch.jit.script
     def neuronal_charge_decay_input(
         x: torch.Tensor, v: torch.Tensor, v_reset: float, tau: float
     ):
@@ -435,7 +434,6 @@ class MPBNLIFNode(MPBNBaseNode):
         return v
 
     @staticmethod
-    @torch.jit.script
     def neuronal_charge_no_decay_input_reset0(
         x: torch.Tensor, v: torch.Tensor, tau: float
     ):
@@ -443,7 +441,6 @@ class MPBNLIFNode(MPBNBaseNode):
         return v
 
     @staticmethod
-    @torch.jit.script
     def neuronal_charge_no_decay_input(
         x: torch.Tensor, v: torch.Tensor, v_reset: float, tau: float
     ):

@@ -1,11 +1,11 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-import math
 
 from .. import neuron
-
 
 __all__ = [
     "set_threshold_margin",
@@ -46,15 +46,16 @@ def set_threshold_margin(
     :type label_one_hot: torch.Tensor
 
     :param eval_threshold: 输出层神经元在测试（推理）时使用的电压阈值
-    :type threshold0: float
+    :type eval_threshold: float
 
     :param threshold0: 输出层神经元在训练时，负样本的电压阈值
-    :type threshold1: float
+    :type threshold0: float
 
     :param threshold1: 输出层神经元在训练时，正样本的电压阈值
     :type threshold1: float
 
     :return: None
+    :rtype: None
 
     ----
 
@@ -79,15 +80,16 @@ def set_threshold_margin(
     :type label_one_hot: torch.Tensor
 
     :param eval_threshold: Voltage threshold of neurons in output layer when evaluating (inference)
-    :type threshold0: float
+    :type eval_threshold: float
 
     :param threshold0: Voltage threshold of the corresponding neurons of **negative** samples in output layer when training
-    :type threshold1: float
+    :type threshold0: float
 
     :param threshold1: Voltage threshold of the corresponding neurons of **positive** samples in output layer when training
     :type threshold1: float
 
     :return: None
+    :rtype: None
     """
     if output_layer.training:
         output_layer.v_threshold = torch.ones_like(label_one_hot) * threshold0
@@ -247,6 +249,7 @@ def kaiming_normal_conv_linear_weight(net: nn.Module):
     :type net: torch.nn.Module
 
     :return: None
+    :rtype: None
 
     ----
 
@@ -262,13 +265,13 @@ def kaiming_normal_conv_linear_weight(net: nn.Module):
     :type net: torch.nn.Module
 
     :return: None
+    :rtype: None
     """
     for m in net.modules():
         if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, a=math.sqrt(5))
 
 
-@torch.jit.script
 def delay(x_seq: torch.Tensor, delay_steps: int):
     """
     **API Language:**
@@ -312,23 +315,23 @@ def delay(x_seq: torch.Tensor, delay_steps: int):
 
     * **代码示例 | Example**
 
-    .. code:: python
+    .. code-block:: python
 
         x = torch.rand([5, 2])
         x[3:].zero_()
         x.requires_grad = True
         y = delay(x, 1)
-        print('x=')
+        print("x=")
         print(x)
-        print('y=')
+        print("y=")
         print(y)
         y.sum().backward()
-        print('x.grad=')
+        print("x.grad=")
         print(x.grad)
 
     Output:
 
-    .. code:: bash
+    .. code-block:: bash
 
         x=
         tensor([[0.1084, 0.5698],

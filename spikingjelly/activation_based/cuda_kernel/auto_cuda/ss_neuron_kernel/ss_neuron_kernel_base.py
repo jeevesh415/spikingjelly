@@ -1,7 +1,9 @@
-from typing import Optional
-import torch
-import numpy as np
 import logging
+import math
+from typing import Callable, Iterable
+
+import numpy as np
+import torch
 
 try:
     import cupy
@@ -11,11 +13,9 @@ except BaseException as e:
     )
     cupy = None
 
-from .... import configure
-from .. import cuda_utils
-from typing import Callable, Iterable
-from . import base, cfunction
-import math
+from ..... import configure
+from ... import cuda_utils
+from .. import base, cfunction
 
 
 def if_requires_grad(items: Iterable):
@@ -45,7 +45,7 @@ def scalar_to_cupy(py_dict: dict, ref: str = "x"):
                 py_dict[key] = value
 
             elif isinstance(value, int):
-                py_dict[key] = cupy.asarray(value)
+                py_dict[key] = cupy.asarray(value, dtype=np.int32)
 
 
 def new_tensors(news: tuple, py_dict: dict, ref: str = "x"):
@@ -290,7 +290,7 @@ class NeuronBPKernel(base.CKernel1D):
                     )
                     core_codes.append(
                         cfunction.mul(
-                            z=f"temp_var",
+                            z="temp_var",
                             x="temp_var",
                             y="grad_s_to_h",
                             dtype=self.dtype,
@@ -298,7 +298,7 @@ class NeuronBPKernel(base.CKernel1D):
                     )
                     core_codes.append(
                         cfunction.add(
-                            z=f"grad_v_next_to_h",
+                            z="grad_v_next_to_h",
                             x="temp_var",
                             y="grad_v_next_to_h",
                             dtype=self.dtype,
@@ -322,7 +322,7 @@ class NeuronBPKernel(base.CKernel1D):
                     )
                     core_codes.append(
                         cfunction.sub(
-                            z=f"grad_v_next_to_h",
+                            z="grad_v_next_to_h",
                             x="grad_v_next_to_h",
                             y="temp_var",
                             dtype=self.dtype,
@@ -372,33 +372,64 @@ class NeuronBPKernel(base.CKernel1D):
 class NeuronATGFBase:
     @staticmethod
     def pre_forward(py_dict: dict):
-        """
-        :param py_dict: a dict built from the neuron's forward autograd function. It should at least contain ``x, v, v_reset``
+        r"""
+        **API Language:**
+        :ref:`中文 <ss_neuron_kernel_pre_forward-cn>` | :ref:`English <ss_neuron_kernel_pre_forward-en>`
+
+        ----
+
+        .. _ss_neuron_kernel_pre_forward-cn:
+
+        * **中文**
+
+        对单步神经元 ``autograd.Function`` 的前向输入字典做预处理，返回 CUDA kernel
+        调用所需的参数。
+
+        :param py_dict: 由神经元前向函数构建的字典，至少应包含 ``x``、``v``、``v_reset``
         :type py_dict: dict
-        :return: requires_grad, blocks, threads, py_dict
 
-            requires_grad: bool
-                if any tensor in ``py_dict`` requires grad, then ``requires_grad = True``;else ``requires_grad = False``
+        :return: ``(requires_grad, blocks, threads, py_dict)``
 
-            blocks: int
-                CUDA param used in calling CUDA kernel
+            - ``requires_grad``: 是否存在需要梯度的张量
+            - ``blocks``: CUDA kernel 启动参数 ``blocks``
+            - ``threads``: CUDA kernel 启动参数 ``threads``，
+              默认来自 ``spikingjelly.configure.cuda_threads``
+            - ``py_dict``: 预处理后的字典。相较输入字典会：
 
-            threads: int
-                CUDA param used in calling CUDA kernel. The default value is ``spikingjelly.configure.cuda_threads``
+              1) 将 ``float/int`` 标量转换为 ``cupy.ndarray``；
+              2) 新增 ``h``、``spike``、``v_next``（与 ``x`` 或 ``v`` 同形状的零张量）；
+              3) 新增 ``numel``（``cupy.ndarray``）。当 ``x.dtype == torch.half`` 时，
+              kernel 按 half2 路径计算，``numel = math.ceil(numel / 2)``。
+        :rtype: tuple
 
-            py_dict: dict
-                Compared with the input ``py_dict``, the returned ``py_dict`` will:
+        ----
 
-                    * convert all ``float/int`` scalars in ``py_dict`` to ``cupy.ndarray``
+        .. _ss_neuron_kernel_pre_forward-en:
 
-                    * add ``h, spike, v_next`` to ``py_dict``. They are zero tensors
-                      with the same shape with ``x`` or ``v``.
+        * **English**
 
-                    * add ``numel`` to ``py_dict``. Note that ``x.shape = [numel]``.
-                      A specific case is that ``x.dtype == torch.half``, then ``numel = math.ceil(numel / 2)``.
-                      Note that ``numel`` in the returned ``py_dict`` is ``cupy.ndarray``
+        Preprocess the forward input dictionary of single-step neuron
+        ``autograd.Function`` and return runtime parameters required by the CUDA
+        kernel launch.
 
+        :param py_dict: A dict built from the neuron's forward function. It should
+            at least contain ``x``, ``v``, and ``v_reset``.
+        :type py_dict: dict
 
+        :return: ``(requires_grad, blocks, threads, py_dict)``
+
+            - ``requires_grad``: whether any tensor in ``py_dict`` requires grad
+            - ``blocks``: CUDA launch parameter ``blocks``
+            - ``threads``: CUDA launch parameter ``threads``; default value is
+              ``spikingjelly.configure.cuda_threads``
+            - ``py_dict``: processed dict. Compared with the input, it will:
+
+              1) convert ``float/int`` scalars to ``cupy.ndarray``;
+              2) add ``h``, ``spike``, ``v_next`` (zero tensors with shape matching
+              ``x`` or ``v``);
+              3) add ``numel`` (as ``cupy.ndarray``). If ``x.dtype ==
+              torch.half``, the half2 path is used and ``numel = math.ceil(numel /
+              2)``.
         :rtype: tuple
         """
         device = py_dict["x"].get_device()
@@ -416,7 +447,7 @@ class NeuronATGFBase:
         blocks = cuda_utils.cal_blocks(numel)
 
         with cuda_utils.DeviceEnvironment(device):
-            numel = cupy.asarray(numel)
+            numel = cupy.asarray(numel, dtype=np.int32)
 
         py_dict["numel"] = numel
 
@@ -490,215 +521,3 @@ class NeuronATGFBase:
         }
 
         return backward_kernel, blocks, threads, py_dict
-
-
-class IFNodeFPKernel(NeuronFPKernel):
-    def neuronal_charge(self) -> str:
-        return cfunction.add(z="h[index]", x="x[index]", y="v[index]", dtype=self.dtype)
-
-
-class IFNodeBPKernel(NeuronBPKernel):
-    def grad_h_to_v(self) -> str:
-        return cfunction.constant(
-            y=f"const {self.dtype} grad_h_to_v", x=1.0, dtype=self.dtype
-        )
-
-    def grad_h_to_x(self) -> str:
-        return cfunction.constant(
-            y=f"const {self.dtype} grad_h_to_x", x=1.0, dtype=self.dtype
-        )
-
-
-class IFNodeATGF(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        x: torch.Tensor,
-        v: torch.Tensor,
-        v_th: float,
-        v_reset: Optional[float],
-        forward_kernel: IFNodeFPKernel,
-        backward_kernel: IFNodeBPKernel,
-    ):
-        py_dict = {"x": x, "v": v, "v_th": v_th, "v_reset": v_reset}
-        requires_grad, blocks, threads, py_dict = NeuronATGFBase.pre_forward(py_dict)
-
-        if py_dict["v_reset"] is None:
-            py_dict.pop("v_reset")
-
-        forward_kernel((blocks,), (threads,), py_dict)
-
-        if "v_reset" not in py_dict:
-            py_dict["v_reset"] = None
-
-        NeuronATGFBase.ctx_save(
-            ctx,
-            requires_grad,
-            py_dict["h"],
-            blocks=blocks,
-            threads=threads,
-            numel=py_dict["numel"],
-            v_th=py_dict["v_th"],
-            v_reset=py_dict["v_reset"],
-            backward_kernel=backward_kernel,
-        )
-
-        return py_dict["spike"], py_dict["v_next"]
-
-    @staticmethod
-    def backward(ctx, grad_spike: torch.Tensor, grad_v_next: torch.Tensor):
-        backward_kernel, blocks, threads, py_dict = NeuronATGFBase.pre_backward(
-            ctx, grad_spike, grad_v_next
-        )
-        if py_dict["v_reset"] is None:
-            py_dict.pop("v_reset")
-
-        backward_kernel((blocks,), (threads,), py_dict)
-
-        if "v_reset" not in py_dict:
-            py_dict["v_reset"] = None
-
-        return py_dict["grad_x"], py_dict["grad_v"], None, None, None, None
-
-
-class LIFNodeFPKernel(NeuronFPKernel):
-    def __init__(self, decay_input: bool, hard_reset: bool, dtype: str):
-        super().__init__(hard_reset, dtype)
-        self.decay_input = decay_input
-        self.add_param(ctype=f"const {dtype} &", cname="decay")
-
-    def neuronal_charge(self) -> str:
-        if self.hard_reset:
-            codes = cfunction.sub(
-                z=f"{self.dtype} LIFNodeFPKernel_temp_var",
-                x="v[index]",
-                y="v_reset",
-                dtype=self.dtype,
-            )
-        else:
-            codes = f"{self.dtype} LIFNodeFPKernel_temp_var = v[index];"
-
-        if self.decay_input:
-            codes += cfunction.sub(
-                z="LIFNodeFPKernel_temp_var",
-                x="x[index]",
-                y="LIFNodeFPKernel_temp_var",
-                dtype=self.dtype,
-            )
-            codes += cfunction.mul(
-                z="LIFNodeFPKernel_temp_var",
-                x="decay",
-                y="LIFNodeFPKernel_temp_var",
-                dtype=self.dtype,
-            )
-        else:
-            codes += cfunction.mul(
-                z="LIFNodeFPKernel_temp_var",
-                x="decay",
-                y="LIFNodeFPKernel_temp_var",
-                dtype=self.dtype,
-            )
-            codes += cfunction.sub(
-                z="LIFNodeFPKernel_temp_var",
-                x="x[index]",
-                y="LIFNodeFPKernel_temp_var",
-                dtype=self.dtype,
-            )
-
-        codes += cfunction.add(
-            z="h[index]", x="LIFNodeFPKernel_temp_var", y="v[index]", dtype=self.dtype
-        )
-
-        return codes
-
-
-class LIFNodeBPKernel(NeuronBPKernel):
-    def __init__(
-        self,
-        decay_input: bool,
-        surrogate_function: Callable,
-        hard_reset: bool,
-        detach_reset: bool,
-        dtype: str,
-    ):
-        super().__init__(surrogate_function, hard_reset, detach_reset, dtype)
-        self.decay_input = decay_input
-        self.add_param(ctype=f"const {dtype} &", cname="decay")
-
-    def grad_h_to_v(self) -> str:
-        return cfunction.sub(
-            z=f"const {self.dtype} grad_h_to_v",
-            x=cfunction.constant(None, x=1.0, dtype=self.dtype),
-            y="decay",
-            dtype=self.dtype,
-        )
-
-    def grad_h_to_x(self) -> str:
-        if not self.decay_input:
-            return cfunction.constant(
-                y=f"const {self.dtype} grad_h_to_x", x=1.0, dtype=self.dtype
-            )
-        else:
-            return f"const {self.dtype} grad_h_to_x = decay;"
-
-
-class LIFNodeATGF(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx,
-        x: torch.Tensor,
-        v: torch.Tensor,
-        v_th: float,
-        v_reset: Optional[float],
-        decay: float,
-        forward_kernel: LIFNodeFPKernel,
-        backward_kernel: LIFNodeBPKernel,
-    ):
-        py_dict = {
-            "x": x,
-            "v": v,
-            "v_th": v_th,
-            "v_reset": v_reset,
-            "decay": decay,
-        }
-        requires_grad, blocks, threads, py_dict = NeuronATGFBase.pre_forward(py_dict)
-
-        if py_dict["v_reset"] is None:
-            py_dict.pop("v_reset")
-
-        forward_kernel((blocks,), (threads,), py_dict)
-
-        if "v_reset" not in py_dict:
-            py_dict["v_reset"] = None
-
-        NeuronATGFBase.ctx_save(
-            ctx,
-            requires_grad,
-            py_dict["h"],
-            blocks=blocks,
-            threads=threads,
-            numel=py_dict["numel"],
-            v_th=py_dict["v_th"],
-            v_reset=py_dict["v_reset"],
-            backward_kernel=backward_kernel,
-            decay=py_dict["decay"],
-        )
-
-        return py_dict["spike"], py_dict["v_next"]
-
-    @staticmethod
-    def backward(ctx, grad_spike: torch.Tensor, grad_v_next: torch.Tensor):
-        backward_kernel, blocks, threads, py_dict = NeuronATGFBase.pre_backward(
-            ctx, grad_spike, grad_v_next
-        )
-        py_dict["decay"] = ctx.decay
-
-        if py_dict["v_reset"] is None:
-            py_dict.pop("v_reset")
-
-        backward_kernel((blocks,), (threads,), py_dict)
-
-        if "v_reset" not in py_dict:
-            py_dict["v_reset"] = None
-
-        return py_dict["grad_x"], py_dict["grad_v"], None, None, None, None, None
